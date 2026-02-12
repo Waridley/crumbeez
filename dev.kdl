@@ -1,0 +1,57 @@
+// crumbeez development layout
+//
+// Launch from the project root:
+//   zellij --layout dev.kdl
+//
+// Prerequisites:
+//   - cargo-watch: cargo install cargo-watch
+//   - WASM target:  rustup target add wasm32-wasip1
+//
+// Workflow:
+//   1. Edit code in the left pane ($EDITOR on src/main.rs)
+//   2. cargo-watch auto-rebuilds the WASM plugin on save (top-right)
+//   3. Press Ctrl+Shift+r to reload the plugin pane (bottom-right)
+//      (grant permissions to develop-rust-plugin on first launch)
+//
+// The develop-rust-plugin helper binds Ctrl+Shift+r to run
+// `cargo build` and then reload the plugin. On first launch it will
+// ask for permissions — press 'y' to grant them.
+//
+// Fault isolation:
+//   - Plugin panics are confined to the WASM sandbox (plugin pane shows error)
+//   - Build failures only affect the build pane; editor and plugin keep running
+//   - The develop-rust-plugin helper runs in its own isolated pane
+
+layout {
+    tab name="crumbeez-dev" focus=true {
+        pane size=1 borderless=true {
+            plugin location="tab-bar"
+        }
+        pane split_direction="horizontal" {
+            pane split_direction="vertical" {
+                // Left 60%: Editor + Terminal — opens src/main.rs in $EDITOR / $VISUAL
+                pane split_direction="horizontal" {
+                    pane edit="src/main.rs" name="editor" size="70%"
+                    pane size="30%"
+                }
+                // Right 40%: build watcher, plugin preview, and dev helper
+                pane split_direction="horizontal" size="40%" {
+                    // Top-right: auto-build watcher
+                    pane name="build" command="bash" size="40%" {
+                        args "-c" "exec bash scripts/dev-watch.sh"
+                    }
+                }
+            }
+        }
+        pane size=2 borderless=true {
+            plugin location="status-bar"
+        }
+        floating_panes {
+            pane {
+                plugin location="https://github.com/zellij-org/develop-rust-plugin/releases/latest/download/develop-rust-plugin.wasm" {
+                    reload_shortcut "F5" // for some reason Ctrl+Shift+r is not working
+                }
+            }
+        }
+    }
+}

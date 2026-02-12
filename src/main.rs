@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+pub(crate) use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
 #[derive(Default)]
@@ -26,7 +26,7 @@ impl ZellijPlugin for State {
 
     fn render(&mut self, _rows: usize, _cols: usize) {
         // Minimal placeholder UI
-	        println!("crumbeez plugin loaded (skeleton)");
+        println!("crumbeez plugin loaded (skeleton)");
     }
 }
 
