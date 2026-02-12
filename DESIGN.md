@@ -152,7 +152,7 @@ Program‑specific handlers (editor/test/build/git) are responsible for recogniz
 ### 6.1 Event Logs (Canonical)
 
 - Format: structured, line‑oriented (e.g., JSONL) so tools can parse it easily.
-- Location: within a configurable data directory, e.g., `~/.local/share/zellij-session-tracker/events/`.
+- Location: within a configurable data directory, e.g., `~/.local/share/crumbeez/events/`.
 - Properties:
   - Append‑only; never mutated in place.
   - Segmented by date and/or session to keep files manageable.
@@ -165,7 +165,7 @@ Program‑specific handlers (editor/test/build/git) are responsible for recogniz
   - High‑level description of what changed.
   - Key files and commands involved.
   - Optional notes about failures, TODOs, or follow‑ups.
-- Location: similar to event logs, e.g., `~/.local/share/zellij-session-tracker/summaries/`.
+- Location: similar to event logs, e.g., `~/.local/share/crumbeez/summaries/`.
 - The Zellij UI will read from these logs to display summaries, but *any* other tool can also read them.
 
 ### 6.3 Optional Index Store (e.g., SQLite)

@@ -1,4 +1,4 @@
-# Zellij Session Tracker
+# crumbeez
 
 **Automatic development session tracking for terminal-based workflows**
 
@@ -109,8 +109,8 @@ See [DESIGN.md](./DESIGN.md) for detailed comparison.
 ```kdl
 // ~/.config/zellij/config.kdl
 plugins {
-    session-tracker {
-        path "session-tracker"
+	crumbeez {
+		path "crumbeez"
         
         // LLM backend
         llm_provider "ollama"  // or "openai", "anthropic"
@@ -120,8 +120,8 @@ plugins {
         // Summarization (task-based with optional safety checkpoints)
         max_summary_gap_minutes 15  // fail-safe: ensure some progress is logged even during long-running tasks
         
-        // Storage
-        db_path "~/.local/share/zellij-session-tracker/sessions.db"
+		// Storage
+		db_path "~/.local/share/crumbeez/sessions.db"
         
         // UI
         show_status_bar true

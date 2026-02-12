@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+
+# IDE/editor configs
+/.idea
+/.vscode
+
+# OS cruft
+.DS_Store
+
+# Logs
+*.log
+

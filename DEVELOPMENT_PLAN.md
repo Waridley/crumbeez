@@ -1,6 +1,6 @@
 # Development Plan & Implementation Guide
 
-This document is the hands-on guide to implementing the Zellij session tracker plugin. It corresponds primarily to Phases 1–3 (MVP) of the roadmap described in `DESIGN.md`.
+This document is the hands-on guide to implementing **crumbeez**, the Zellij session-tracker plugin. It corresponds primarily to Phases 1–3 (MVP) of the roadmap described in `DESIGN.md`.
 
 ## Prerequisites
 
@@ -21,7 +21,7 @@ Before starting implementation:
 
 3. **Add WASM target**
    ```bash
-   rustup target add wasm32-wasi
+   rustup target add wasm32-wasip1
    ```
 
 4. **Familiarize yourself with Zellij**
@@ -39,8 +39,8 @@ zellij plugin -f -- https://github.com/zellij-org/create-rust-plugin/releases/la
 ```
 
 When prompted:
-- **Plugin name:** `session-tracker`
-- **Project directory:** `/data/kevin/Projects/zellij-session-tracker`
+- **Plugin name:** `crumbeez`
+- **Project directory:** `/data/kevin/Projects/crumbeez`
 
 This will create:
 - `Cargo.toml` - Rust project configuration
@@ -73,10 +73,10 @@ impl ZellijPlugin for State {
         false
     }
 
-    fn render(&mut self, rows: usize, cols: usize) {
-        // Called when plugin should draw UI
-        println!("Hello from session-tracker!");
-    }
+	    fn render(&mut self, rows: usize, cols: usize) {
+	        // Called when plugin should draw UI
+	        println!("Hello from crumbeez!");
+	    }
 }
 
 register_plugin!(State);
@@ -136,9 +136,9 @@ impl ZellijPlugin for State {
         }
     }
 
-    fn render(&mut self, rows: usize, cols: usize) {
-        // Display recent events
-        println!("Session Tracker - Recent Events:");
+	    fn render(&mut self, rows: usize, cols: usize) {
+	        // Display recent events
+	        println!("crumbeez - Recent Events:");
         for (i, event) in self.events_log.iter().rev().take(rows - 2).enumerate() {
             println!("{}: {}", i, event);
         }
@@ -302,19 +302,19 @@ When ready to use:
 cargo build --release
 ```
 
-The plugin will be at: `target/wasm32-wasi/release/session-tracker.wasm`
+The plugin will be at: `target/wasm32-wasip1/release/crumbeez.wasm`
 
 Load it in Zellij:
 ```bash
-zellij plugin -- file:///data/kevin/Projects/zellij-session-tracker/target/wasm32-wasi/release/session-tracker.wasm
+zellij plugin -- file:///data/kevin/Projects/crumbeez/target/wasm32-wasip1/release/crumbeez.wasm
 ```
 
 Or add to your Zellij config (`~/.config/zellij/config.kdl`):
 ```kdl
 plugins {
-    session-tracker {
-        path "file:///data/kevin/Projects/zellij-session-tracker/target/wasm32-wasi/release/session-tracker.wasm"
-    }
+	crumbeez {
+	    path "file:///data/kevin/Projects/crumbeez/target/wasm32-wasip1/release/crumbeez.wasm"
+	}
 }
 ```
 
