@@ -30,15 +30,18 @@ layout {
         pane split_direction="horizontal" {
             pane split_direction="vertical" {
                 // Left 60%: Editor + Terminal — opens src/main.rs in $EDITOR / $VISUAL
-                pane split_direction="horizontal" {
+                pane split_direction="horizontal" size="60%" {
                     pane edit="src/main.rs" name="editor" size="70%"
-                    pane size="30%"
+                    pane
                 }
                 // Right 40%: build watcher, plugin preview, and dev helper
-                pane split_direction="horizontal" size="40%" {
+                pane split_direction="horizontal" {
                     // Top-right: auto-build watcher
-                    pane name="build" command="bash" size="40%" {
+                    pane name="build" command="bash" size="70%" {
                         args "-c" "exec bash scripts/dev-watch.sh"
+                    }
+                    pane name="crumbeez" {
+                        // don't load the plugin, develop-rust-plugin will load it in a different pane anyway
                     }
                 }
             }

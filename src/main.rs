@@ -19,9 +19,10 @@ impl ZellijPlugin for State {
         ]);
     }
 
-    fn update(&mut self, _event: Event) -> bool {
+    fn update(&mut self, event: Event) -> bool {
         // TODO: implement event handling and summarization orchestration
-        false
+        println!("{event:#?}");
+        true
     }
 
     fn render(&mut self, _rows: usize, _cols: usize) {
