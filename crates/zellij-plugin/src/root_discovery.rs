@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use zellij_tile::prelude::*;
+
+pub use crumbeez_lib::DiscoveryPhase;
 
 /// Context key used to tag run_command requests for root discovery.
 const CTX_PURPOSE: &str = "crumbeez_purpose";
@@ -24,42 +25,6 @@ fn purpose_context(purpose: CommandPurpose) -> BTreeMap<String, String> {
         serde_json::to_string(&purpose).expect("CommandPurpose serialization is infallible"),
     );
     ctx
-}
-
-/// Async state machine phases for root discovery.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum DiscoveryPhase {
-    /// Waiting for RunCommands permission to be granted.
-    #[default]
-    AwaitingPermissions,
-    /// Fired `git rev-parse --show-toplevel`, waiting for result.
-    FindingGitRoot,
-    /// Fired `git rev-parse --show-superproject-working-tree`, waiting for result.
-    FindingSuperproject,
-    /// Fired `mkdir -p` commands, waiting for them to complete.
-    CreatingDirs { pending: usize, dirs: Vec<PathBuf> },
-    /// All .crumbeez directories have been created and are ready.
-    Ready { dirs: Vec<PathBuf> },
-    /// Discovery failed with an error message.
-    Failed(String),
-}
-
-impl fmt::Display for DiscoveryPhase {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AwaitingPermissions => write!(f, "⏳ Awaiting permissions..."),
-            Self::FindingGitRoot => write!(f, "🔍 Finding git root..."),
-            Self::FindingSuperproject => write!(f, "🔍 Checking for parent repo..."),
-            Self::CreatingDirs { pending, .. } => {
-                write!(f, "📁 Creating .crumbeez dirs ({pending} remaining)...")
-            }
-            Self::Ready { dirs } => {
-                let dirs: Vec<_> = dirs.iter().map(|d| d.to_string_lossy()).collect();
-                write!(f, "✅ Ready — {}", dirs.join(", "))
-            }
-            Self::Failed(msg) => write!(f, "❌ Failed: {msg}"),
-        }
-    }
 }
 
 /// State for the root discovery process.
@@ -204,22 +169,32 @@ impl RootDiscovery {
 
     fn create_crumbeez_dirs(&mut self, roots: Vec<PathBuf>) {
         let count = roots.len();
-        let dirs: Vec<PathBuf> = roots.iter().map(|r| r.join(".crumbeez")).collect();
+        let dirs: Vec<PathBuf> = roots
+            .iter()
+            .map(|r| crumbeez_lib::crumbeez_dir(r))
+            .collect();
 
-        for dir in &dirs {
-            // Create the .crumbeez directory with events and summaries subdirs
-            let dir_str = dir.to_string_lossy().to_string();
-            let events_dir = format!("{}/events", dir_str);
-            let summaries_dir = format!("{}/summaries", dir_str);
+        for root in &roots {
+            let mkdir_args: Vec<String> = crumbeez_lib::required_dirs(root)
+                .into_iter()
+                .map(|d| d.to_string_lossy().into_owned())
+                .collect();
+            let mkdir_strs: Vec<&str> = mkdir_args.iter().map(|s| s.as_str()).collect();
+
+            let mut cmd: Vec<&str> = vec!["mkdir", "-p"];
+            cmd.extend_from_slice(&mkdir_strs);
 
             run_command_with_env_variables_and_cwd(
-                &["mkdir", "-p", &events_dir, &summaries_dir],
+                &cmd,
                 BTreeMap::new(),
                 self.initial_cwd.clone(),
                 purpose_context(CommandPurpose::MkdirCrumbeez),
             );
 
-            eprintln!("[crumbeez] Creating .crumbeez dir at: {:?}", dir);
+            eprintln!(
+                "[crumbeez] Creating .crumbeez dir at: {:?}",
+                crumbeez_lib::crumbeez_dir(root)
+            );
         }
 
         self.phase = DiscoveryPhase::CreatingDirs {

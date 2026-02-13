@@ -8,7 +8,7 @@
 //   - WASM target:  rustup target add wasm32-wasip1
 //
 // Workflow:
-//   1. Edit code in the left pane ($EDITOR on src/main.rs)
+//   1. Edit code in the left pane ($EDITOR on crates/zellij-plugin/src/main.rs)
 //   2. cargo-watch auto-rebuilds the WASM plugin on save (top-right)
 //   3. Press Ctrl+Shift+r to reload the plugin pane (bottom-right)
 //      (grant permissions to develop-rust-plugin on first launch)
@@ -31,7 +31,7 @@ layout {
             pane split_direction="vertical" {
                 // Left 60%: Editor + Terminal — opens src/main.rs in $EDITOR / $VISUAL
                 pane split_direction="horizontal" size="60%" {
-                    pane edit="src/main.rs" name="editor" size="70%"
+                    pane edit="crates/zellij-plugin/src/main.rs" name="editor" size="70%"
                     pane
                 }
                 // Right 40%: build watcher, plugin preview, and dev helper

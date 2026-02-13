@@ -2,7 +2,7 @@
 # ──────────────────────────────────────────────────────────────────
 # crumbeez development watcher
 #
-# Watches src/ and Cargo.toml for changes and auto-rebuilds the
+# Watches crates/ and Cargo.toml for changes and auto-rebuilds the
 # WASM plugin.  After a successful build the new binary is at
 #   target/wasm32-wasip1/debug/crumbeez.wasm
 #
@@ -21,7 +21,7 @@ RESET='\033[0m'
 banner() {
     echo -e "${BOLD}${CYAN}🐝 crumbeez dev-watch${RESET}"
     echo -e "${CYAN}────────────────────────────────────────${RESET}"
-    echo -e "  Watching ${BOLD}src/${RESET} and ${BOLD}Cargo.toml${RESET} for changes"
+    echo -e "  Watching ${BOLD}crates/${RESET} and ${BOLD}Cargo.toml${RESET} for changes"
     echo ""
     echo -e "  ${BOLD}${YELLOW}┌─────────────────────────────────────┐${RESET}"
     echo -e "  ${BOLD}${YELLOW}│  Ctrl+Shift+r  →  rebuild & reload  │${RESET}"
@@ -51,7 +51,7 @@ initial_build() {
 watch_with_cargo_watch() {
     exec cargo watch \
         --clear \
-        --watch src/ \
+        --watch crates/ \
         --watch Cargo.toml \
         -s 'if cargo build 2>&1; then
                 printf "\n\033[0;32m✅ Build succeeded\033[0m\n"
@@ -68,7 +68,7 @@ watch_with_inotifywait() {
     echo ""
     while true; do
         echo -e "${CYAN}Waiting for file changes...${RESET}"
-        inotifywait -r -q -e modify,create,delete,move src/ Cargo.toml 2>/dev/null
+        inotifywait -r -q -e modify,create,delete,move crates/ Cargo.toml 2>/dev/null
         echo -e "\n${YELLOW}Change detected — building...${RESET}\n"
         if cargo build 2>&1; then
             echo -e "\n${GREEN}✅ Build succeeded${RESET}"
