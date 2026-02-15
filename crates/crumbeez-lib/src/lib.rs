@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 /// Name of the crumbeez data directory created at each project root.
 pub const CRUMBEEZ_DIR_NAME: &str = ".crumbeez";
 
-/// Subdirectory for event logs (JSONL).
-pub const EVENTS_SUBDIR: &str = "events";
+/// Subdirectory for temporary data that might be relevant to summaries but has not yet been summarized in the output.
+pub const SCRATCH_DIR: &str = "scratchpad";
 
 /// Subdirectory for human-readable summary logs (Markdown).
 pub const SUMMARIES_SUBDIR: &str = "summaries";
@@ -21,9 +21,9 @@ pub fn crumbeez_dir(root: &Path) -> PathBuf {
     root.join(CRUMBEEZ_DIR_NAME)
 }
 
-/// Returns the events subdirectory path for a given project root.
-pub fn events_dir(root: &Path) -> PathBuf {
-    crumbeez_dir(root).join(EVENTS_SUBDIR)
+/// Returns the temporary scratch directory path for a given project root.
+pub fn scratch_dir(root: &Path) -> PathBuf {
+    crumbeez_dir(root).join(SCRATCH_DIR)
 }
 
 /// Returns the summaries subdirectory path for a given project root.
@@ -33,7 +33,7 @@ pub fn summaries_dir(root: &Path) -> PathBuf {
 
 /// Returns all directories that must exist for a given project root.
 pub fn required_dirs(root: &Path) -> Vec<PathBuf> {
-    vec![events_dir(root), summaries_dir(root)]
+    vec![scratch_dir(root), summaries_dir(root)]
 }
 
 // ── Discovery phase ──────────────────────────────────────────────
