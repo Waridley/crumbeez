@@ -3,6 +3,7 @@ mod keystroke;
 mod root_discovery;
 
 use std::collections::{BTreeMap, HashMap};
+use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_tile::prelude::*;
 
 use crumbeez_lib::{
@@ -18,12 +19,15 @@ struct State {
     permissions_granted: bool,
     keystroke_activity: KeystrokeActivity,
     focused_pane: Option<FocusedPane>,
+    current_pane_has_activity: bool,
     tab_names: HashMap<usize, String>,
     event_log: EventLog,
     event_log_io: EventLogIO,
     pending_summaries: Vec<String>,
     live_text: Option<String>,
     live_cursor: usize,
+    last_activity_time: Option<SystemTime>,
+    last_summary_time: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,12 +37,14 @@ struct FocusedPane {
     is_plugin: bool,
 }
 
-const SUMMARY_TIMER_SECS: f64 = 60.0;
+const INACTIVITY_TIMER_SECS: f64 = 10.0;
 
 impl State {
     fn log_event(&mut self, event: KeystrokeEvent) {
         self.keystroke_activity.push_event(event.clone());
         self.process_for_event_log(event);
+        // Mark that this pane has had activity (for summary triggering on pane switch)
+        self.current_pane_has_activity = true;
     }
 
     fn process_for_event_log(&mut self, event: KeystrokeEvent) {
@@ -115,6 +121,8 @@ impl State {
                 self.seal_and_log(event);
             }
         }
+
+        self.last_activity_time = Some(SystemTime::now());
     }
 
     fn seal_and_log(&mut self, event: KeystrokeEvent) {
@@ -139,7 +147,7 @@ impl State {
     }
 
     fn current_time_ms() -> u64 {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use std::time::SystemTime;
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -157,9 +165,17 @@ impl State {
                 eprintln!("[crumbeez] Log path: {:?}", log_path);
                 self.event_log_io.set_log_path(log_path.clone());
                 self.event_log_io.load(self.discovery.initial_cwd.clone());
-                set_timeout(SUMMARY_TIMER_SECS);
+                self.reset_inactivity_timer();
             }
         }
+    }
+
+    fn reset_inactivity_timer(&mut self) {
+        eprintln!(
+            "[crumbeez] Resetting inactivity timer: {}s",
+            INACTIVITY_TIMER_SECS
+        );
+        set_timeout(INACTIVITY_TIMER_SECS);
     }
 
     fn handle_pane_update(&mut self, manifest: PaneManifest) {
@@ -211,7 +227,19 @@ impl State {
             return;
         }
 
+        eprintln!(
+            "[crumbeez] Pane focus changed: {:?} -> {:?}",
+            self.focused_pane, new_fp
+        );
+
+        // Trigger summary when switching away from a pane that had activity
+        if self.current_pane_has_activity {
+            self.trigger_summary_for_pane_switch();
+        }
+
+        // Switch to new pane and reset activity flag
         self.focused_pane = Some(new_fp);
+        self.current_pane_has_activity = false;
 
         let event = KeystrokeEvent::PaneFocused(PaneFocusedEvent {
             tab_name: focused_tab_name,
@@ -221,6 +249,30 @@ impl State {
         });
         eprintln!("[crumbeez] {}", event);
         self.log_event(event);
+    }
+
+    fn trigger_summary_for_pane_switch(&mut self) {
+        eprintln!("[crumbeez] DEBUG: trigger_summary_for_pane_switch called");
+        self.seal_pending_text();
+        let unconsumed = self.event_log.unconsumed_count();
+        if unconsumed > 0 {
+            eprintln!(
+                "[crumbeez] Pane switch trigger, summarizing {} events",
+                unconsumed
+            );
+            if let Some(summary) = event_log_io::generate_summary(&mut self.event_log) {
+                self.pending_summaries.push(summary);
+                if self.pending_summaries.len() > 10 {
+                    self.pending_summaries.remove(0);
+                }
+            }
+            if let Ok(data) = self.event_log.serialize() {
+                self.event_log_io
+                    .save(self.discovery.initial_cwd.clone(), data);
+            } else {
+                eprintln!("[crumbeez] Failed to serialize event log");
+            }
+        }
     }
 }
 
@@ -253,7 +305,7 @@ impl ZellijPlugin for State {
     }
 
     fn update(&mut self, event: Event) -> bool {
-        match event {
+        let result = match event {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 self.permissions_granted = true;
                 let cwd = get_plugin_ids().initial_cwd;
@@ -314,37 +366,55 @@ impl ZellijPlugin for State {
                     .filter(|t| !t.name.is_empty())
                     .map(|t| (t.position, t.name))
                     .collect();
-                false
+                true
             }
             Event::PaneUpdate(manifest) => {
                 self.handle_pane_update(manifest);
                 true
             }
-            Event::Timer(_) => {
-                eprintln!(
-                    "[crumbeez] Timer fired, unconsumed: {}",
-                    self.event_log.unconsumed_count()
-                );
-                self.seal_pending_text();
-                if self.event_log.unconsumed_count() > 0 {
-                    if let Some(summary) = event_log_io::generate_summary(&mut self.event_log) {
-                        self.pending_summaries.push(summary);
-                        if self.pending_summaries.len() > 10 {
-                            self.pending_summaries.remove(0);
+            Event::Timer(elapsed) => {
+                eprintln!("[crumbeez] Timer fired after {:?}s", elapsed);
+
+                // Check if we've been inactive for the threshold AND there's new activity since last summary
+                let should_summarize = self.last_activity_time.is_some_and(|last| {
+                    let inactive_duration = SystemTime::now().duration_since(last);
+                    inactive_duration
+                        .map(|d| d.as_secs_f64() >= INACTIVITY_TIMER_SECS)
+                        .unwrap_or(false)
+                }) && self.last_summary_time.is_none_or(|last_summary| {
+                    self.last_activity_time
+                        .is_some_and(|last_activity| last_activity > last_summary)
+                });
+
+                if should_summarize {
+                    self.seal_pending_text();
+                    let unconsumed = self.event_log.unconsumed_count();
+                    if unconsumed > 0 {
+                        if let Some(summary) = event_log_io::generate_summary(&mut self.event_log) {
+                            self.pending_summaries.push(summary);
+                            if self.pending_summaries.len() > 10 {
+                                self.pending_summaries.remove(0);
+                            }
                         }
+                        if let Ok(data) = self.event_log.serialize() {
+                            self.event_log_io
+                                .save(self.discovery.initial_cwd.clone(), data);
+                        } else {
+                            eprintln!("[crumbeez] Failed to serialize event log");
+                        }
+                        self.last_summary_time = Some(SystemTime::now());
                     }
-                    if let Ok(data) = self.event_log.serialize() {
-                        self.event_log_io
-                            .save(self.discovery.initial_cwd.clone(), data);
-                    } else {
-                        eprintln!("[crumbeez] Failed to serialize event log");
-                    }
+                } else {
+                    eprintln!("[crumbeez] Skipping summary - no new activity since last summary");
                 }
-                set_timeout(SUMMARY_TIMER_SECS);
+                self.reset_inactivity_timer();
                 true
             }
+            Event::FileSystemUpdate(_) => true,
             _ => false,
-        }
+        };
+
+        result
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
@@ -436,7 +506,7 @@ fn word_left(s: &str, pos: usize) -> usize {
         return 0;
     }
     let mut iter = chars_before.iter().rev();
-    while let Some(&(_, c)) = iter.next() {
+    for &(_, c) in iter.by_ref() {
         if c.is_alphanumeric() || c == '_' {
             break;
         }
