@@ -52,7 +52,7 @@ The design prioritizes:
     - **Event logs** (structured but not necessarily human‑friendly).
     - **Summary logs** (explicitly human‑friendly, e.g., Markdown or structured text).
 - **Pluggable indexing**
-  - An optional **index store** (e.g., SQLite) can be used for fast querying, filtering, and correlation, but it is *not* the primary source of truth.
+  - An optional **index store** can be used for fast querying, filtering, and correlation, but it is *not* the primary source of truth.
   - The design must allow alternative indexing/storage implementations in the future.
 - **Crash resilience**
   - Writes should be durable enough that crashes do not lose events that were already observed.
@@ -82,7 +82,7 @@ Event Collector & Event Model
     ↓
 Event Log Writer  ──────▶  Append‑only Event Logs (canonical)
     │
-    ├──────────────▶  Optional Index Store (e.g., SQLite)
+    ├──────────────▶  Optional Index Store
     ↓
 Summarization Orchestrator (Task/checkpoint‑based)
     ↓                      ↘
@@ -106,8 +106,8 @@ The plugin is compiled to WASM and runs inside Zellij, using the `zellij_tile` A
 Core responsibilities:
 
 1. **Permissions & subscription**
-   - Request permissions such as `ReadApplicationState`, `RunCommands`, and `WebAccess`.
-   - Subscribe to relevant events: `PaneUpdate`, `TabUpdate`, `FileSystemUpdate`, `Timer`, `RunCommandResult`, and optionally `Key` events.
+   - Request permissions: `ReadApplicationState`, `RunCommands`, `InterceptInput`, `WriteToStdin`.
+   - Subscribe to events: `Key`, `InterceptedKeyPress`, `PaneUpdate`, `TabUpdate`, `FileSystemUpdate`, `Timer`, `RunCommandResult`, `PermissionRequestResult`.
 
 2. **Event collection & modeling**
    - Maintain an in‑memory view of panes, tabs, and sessions.
@@ -129,34 +129,32 @@ Core responsibilities:
 
 ## 5. Event Model
 
-The internal event model is intentionally simple and extensible. Examples include:
+The internal event model captures keystroke-level activity. The primary event types are:
 
-- `PaneFocused { pane_id, tab_id, timestamp }`
-- `PaneCommandChanged { pane_id, command, timestamp }`
-- `FileModified { path, pane_id?, tab_id?, timestamp }`
-- `EditorSession { pane_id, tool, files, start, end }`
-- `TestRun { command, status, passed, failed, duration, timestamp }`
-- `BuildRun { command, status, errors_summary, timestamp }`
-- `GitCommit { hash, message, files_changed, timestamp }`
+- `TextTyped(String)` — printable characters, coalesced into buffers
+- `Shortcut(ShortcutEvent)` — Ctrl/Alt/Super chords
+- `Navigation(NavigationEvent)` — arrow keys, Home/End/PageUp/PageDown with repetition counts
+- `EditControl(EditControlEvent)` — Enter, Tab, Backspace, Delete, Insert
+- `PaneFocused(PaneFocusedEvent)` — pane/tab focus changes with pane title and command info
+- `Escape` — Escape key
+- `FunctionKey(u8)` — F1–F12
+- `SystemKey(SystemKeyEvent)` — CapsLock, ScrollLock, etc.
 
-These events are:
+The event model includes a live text buffer that applies editing operations (backspace, delete, cursor movement) retroactively to reflect what the user actually typed.
 
-- Serialized into an **event log** (e.g., JSONL with one event per line).
-- Optionally mirrored into an index store for queryability.
-
-Program‑specific handlers (editor/test/build/git) are responsible for recognizing relevant patterns in pane state and `RunCommandResult` output, and emitting these higher‑level events.
+Events are serialized to a binary event log using MessagePack.
 
 
 ## 6. Storage & Logs
 
 ### 6.1 Event Logs (Canonical)
 
-- Format: structured, line‑oriented (e.g., JSONL) so tools can parse it easily.
-- Location: within a configurable data directory, e.g., `~/.local/share/crumbeez/events/`.
+- Format: **MessagePack** (binary), stored in a single append‑only file per session.
+- Location: `.crumbeez/scratchpad/events.bin` relative to each project's git root.
 - Properties:
   - Append‑only; never mutated in place.
-  - Segmented by date and/or session to keep files manageable.
-  - Recoverable after crashes (at worst, the last partial line is discarded).
+  - Contains a header with version and consumed count, followed by event entries.
+  - Recoverable after crashes (at worst, the last partial entry is discarded).
 
 ### 6.2 Summary Logs (Canonical)
 
@@ -165,18 +163,18 @@ Program‑specific handlers (editor/test/build/git) are responsible for recogniz
   - High‑level description of what changed.
   - Key files and commands involved.
   - Optional notes about failures, TODOs, or follow‑ups.
-- Location: similar to event logs, e.g., `~/.local/share/crumbeez/summaries/`.
+- Location: `.crumbeez/summaries/` relative to each project's git root.
 - The Zellij UI will read from these logs to display summaries, but *any* other tool can also read them.
 
-### 6.3 Optional Index Store (e.g., SQLite)
+### 6.3 Optional Index Store
 
 - Purpose:
-  - Fast queries over long history (e.g., “summaries for repo X in the last week”, “all events involving file Y”).
+  - Fast queries over long history (e.g., "summaries for repo X in the last week", "all events involving file Y").
   - Efficient correlation across logs.
 - Requirements:
   - Treat as a **cache / index**, not the canonical store.
   - Rebuildable from logs if necessary.
-  - Pluggable: the initial implementation may use SQLite, but the design allows replacing or extending it.
+  - Pluggable: the design allows for alternative indexing implementations in the future.
 
 
 ## 7. Summarization Pipeline
@@ -234,7 +232,7 @@ Configuration fields (conceptually):
 
 - **Storage**
   - `data_dir`: where event/summary logs live.
-  - `index_backend`: `none` / `sqlite` / other.
+  - `index_backend`: `none` / other.
 - **Summarization**
   - `enabled`: `true` / `false`.
   - `max_unsummarized_minutes`: optional safety threshold for emitting checkpoint summaries during long‑running tasks.

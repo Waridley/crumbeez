@@ -37,29 +37,30 @@ The plugin runs inside Zellij and:
 
 - ✅ **Automatic** - No manual logging required
 - ✅ **Multi-pane aware** - Understands your workflow across different panes
-- ✅ **Crash resistant** - Events saved immediately to SQLite
-- ✅ **Privacy-focused** - Local-only option with Ollama, or cloud LLMs
-- ✅ **Semantic understanding** - Not just raw logs, but intelligent interpretation
-- ✅ **Task-based summaries with checkpoints** - Checkpoints tied to logical units of work (tests, builds, commits), with optional time-based safety checkpoints so you don't lose context during long-running tasks
+- ✅ **Crash resistant** - Events saved immediately to MessagePack binary log
+- ✅ **Keystroke interception** - Captures and classifies all keyboard input
+- ⏳ **Privacy-focused** - Local-only option with Ollama, or cloud LLMs (planned)
+- ⏳ **Semantic understanding** - Intelligent interpretation of activities (planned)
+- ⏳ **Task-based summaries** - LLM-powered summaries tied to logical units of work (planned)
 
 ## Status
 
-🚧 **Early Design Phase** - Currently designing the architecture and exploring Zellij's plugin API.
+🚧 **In Development** - Core event tracking implemented. Working on LLM summarization and human-readable summary logs.
 
 See [DESIGN.md](./DESIGN.md) for detailed architecture and implementation plans.
 
 ## Architecture Overview
 
 ```
-Zellij Panes → Event Collector → Program Handlers → Structured Events
-                                                            ↓
-                                                      SQLite Store
-                                                            ↓
-                                             Summarization Orchestrator
-                                                            ↓
-                                                        LLM API
-                                                            ↓
-                                                    Summary Display
+Zellij Panes → Event Collector → Keystroke Events
+                                              ↓
+                                    MessagePack Event Log
+                                              ↓
+                                   Summary Generation
+                                              ↓
+                                              LLM API
+                                              ↓
+                                      Summary Display
 ```
 
 The plugin doesn't send raw terminal output to the LLM. Instead, it:
@@ -89,10 +90,12 @@ See [DESIGN.md](./DESIGN.md) for detailed comparison.
 ## Planned Features
 
 ### MVP (v0.1)
-- [ ] Basic event collection (pane updates, file changes)
-- [ ] SQLite event storage
+- [x] Keystroke tracking with semantic classification
+- [x] Pane/tab focus tracking
+- [x] MessagePack event storage
 - [ ] Editor detection and file change tracking
-- [ ] Simple task-based summarization (summaries tied to logical units of work, with optional safety checkpoints)
+- [ ] LLM summarization integration
+- [ ] Human-readable summary logs
 - [ ] Basic UI for viewing summaries
 
 ### Future
@@ -113,15 +116,12 @@ plugins {
 		path "crumbeez"
         
         // LLM backend
-        llm_provider "ollama"  // or "openai", "anthropic"
+        llm_provider "ollama"  // or "openai", "anthropic", "none"
         llm_model "llama3"
         llm_api_url "http://localhost:11434"
         
         // Summarization (task-based with optional safety checkpoints)
         max_summary_gap_minutes 15  // fail-safe: ensure some progress is logged even during long-running tasks
-        
-		// Storage
-		db_path "~/.local/share/crumbeez/sessions.db"
         
         // UI
         show_status_bar true

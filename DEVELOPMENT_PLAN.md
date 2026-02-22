@@ -154,52 +154,7 @@ cargo build
 # Press Ctrl+Shift+r in the dev environment
 ```
 
-## Step 5: Add SQLite Storage
-
-Add dependencies to `Cargo.toml`:
-```toml
-[dependencies]
-zellij-tile = "0.41.0"
-rusqlite = { version = "0.31", features = ["bundled"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-```
-
-Create a simple event store:
-```rust
-use rusqlite::{Connection, params};
-
-struct EventStore {
-    conn: Connection,
-}
-
-impl EventStore {
-    fn new(db_path: &str) -> Result<Self, rusqlite::Error> {
-        let conn = Connection::open(db_path)?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                data TEXT NOT NULL,
-                summarized BOOLEAN DEFAULT 0
-            )",
-            [],
-        )?;
-        Ok(Self { conn })
-    }
-
-    fn insert_event(&self, event_type: &str, data: &str) -> Result<(), rusqlite::Error> {
-        self.conn.execute(
-            "INSERT INTO events (timestamp, event_type, data) VALUES (datetime('now'), ?1, ?2)",
-            params![event_type, data],
-        )?;
-        Ok(())
-    }
-}
-```
-
-## Step 6: Add Summarization Orchestration (Tasks + Safety Timer)
+## Step 5: Add Summarization Orchestration (Tasks + Safety Timer)
 
 Use timers as a safety net rather than as the primary driver of summaries. In the real plugin, you’ll trigger summarization when logical tasks complete (commands, test runs, commits); the timer just ensures we still checkpoint progress if work runs for a long time without a clear boundary:
 
@@ -235,7 +190,7 @@ impl ZellijPlugin for State {
 }
 ```
 
-## Step 7: Integrate LLM API
+## Step 6: Integrate LLM API
 
 Add web request capability:
 
@@ -294,7 +249,7 @@ Event::WebRequestResult(status, headers, body, context) => {
 }
 ```
 
-## Step 8: Build Release Version
+## Step 7: Build Release Version
 
 When ready to use:
 
