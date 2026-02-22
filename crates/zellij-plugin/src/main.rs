@@ -4,6 +4,7 @@ mod root_discovery;
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, error, info};
 use zellij_tile::prelude::*;
 
 use crumbeez_lib::{
@@ -155,14 +156,14 @@ impl State {
     }
 
     fn handle_discovery_ready(&mut self) {
-        eprintln!(
-            "[crumbeez] handle_discovery_ready called, phase: {:?}",
-            self.discovery.phase
+        debug!(
+            phase = ?self.discovery.phase,
+            "handle_discovery_ready called"
         );
         if let crumbeez_lib::DiscoveryPhase::Ready { ref dirs } = self.discovery.phase {
             if let Some(dir) = dirs.first() {
                 let log_path = crumbeez_lib::event_log_path_from_crumbeez_dir(dir);
-                eprintln!("[crumbeez] Log path: {:?}", log_path);
+                debug!(path = ?log_path, "Log path");
                 self.event_log_io.set_log_path(log_path.clone());
                 self.event_log_io.load(self.discovery.initial_cwd.clone());
                 self.reset_inactivity_timer();
@@ -171,10 +172,7 @@ impl State {
     }
 
     fn reset_inactivity_timer(&mut self) {
-        eprintln!(
-            "[crumbeez] Resetting inactivity timer: {}s",
-            INACTIVITY_TIMER_SECS
-        );
+        debug!(secs = INACTIVITY_TIMER_SECS, "Resetting inactivity timer");
         set_timeout(INACTIVITY_TIMER_SECS);
     }
 
@@ -227,9 +225,10 @@ impl State {
             return;
         }
 
-        eprintln!(
-            "[crumbeez] Pane focus changed: {:?} -> {:?}",
-            self.focused_pane, new_fp
+        debug!(
+            from = ?self.focused_pane,
+            to = ?new_fp,
+            "Pane focus changed"
         );
 
         // Trigger summary when switching away from a pane that had activity
@@ -247,18 +246,18 @@ impl State {
             command: pane.terminal_command.clone(),
             is_plugin: pane.is_plugin,
         });
-        eprintln!("[crumbeez] {}", event);
+        info!(%event);
         self.log_event(event);
     }
 
     fn trigger_summary_for_pane_switch(&mut self) {
-        eprintln!("[crumbeez] DEBUG: trigger_summary_for_pane_switch called");
+        debug!("trigger_summary_for_pane_switch called");
         self.seal_pending_text();
         let unconsumed = self.event_log.unconsumed_count();
         if unconsumed > 0 {
-            eprintln!(
-                "[crumbeez] Pane switch trigger, summarizing {} events",
-                unconsumed
+            info!(
+                count = unconsumed,
+                "Pane switch trigger, summarizing events"
             );
             if let Some(summary) = event_log_io::generate_summary(&mut self.event_log) {
                 self.pending_summaries.push(summary);
@@ -270,7 +269,7 @@ impl State {
                 self.event_log_io
                     .save(self.discovery.initial_cwd.clone(), data);
             } else {
-                eprintln!("[crumbeez] Failed to serialize event log");
+                error!("Failed to serialize event log");
             }
         }
     }
@@ -278,6 +277,11 @@ impl State {
 
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_target(false)
+            .try_init();
+
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::RunCommands,
@@ -309,13 +313,13 @@ impl ZellijPlugin for State {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 self.permissions_granted = true;
                 let cwd = get_plugin_ids().initial_cwd;
-                eprintln!("[crumbeez] Permissions granted. initial_cwd: {:?}", cwd);
+                info!(?cwd, "Permissions granted");
                 self.discovery.start(cwd);
                 intercept_key_presses();
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
-                eprintln!("[crumbeez] Permissions denied!");
+                error!("Permissions denied");
                 self.discovery.phase =
                     root_discovery::DiscoveryPhase::Failed("Permissions denied".to_string());
                 true
@@ -350,13 +354,13 @@ impl ZellijPlugin for State {
                 let bytes = key_to_bytes(&key);
                 write(bytes);
                 let event = classify(&key);
-                eprintln!("[crumbeez] key event: {}", event);
+                debug!(%event, "key event");
                 self.log_event(event);
                 true
             }
             Event::Key(key) => {
                 let event = classify(&key);
-                eprintln!("[crumbeez] key event (plugin focused): {}", event);
+                debug!(%event, "key event (plugin focused)");
                 self.log_event(event);
                 true
             }
@@ -373,7 +377,7 @@ impl ZellijPlugin for State {
                 true
             }
             Event::Timer(elapsed) => {
-                eprintln!("[crumbeez] Timer fired after {:?}s", elapsed);
+                debug!(elapsed_secs = ?elapsed, "Timer fired");
 
                 // Check if we've been inactive for the threshold AND there's new activity since last summary
                 let should_summarize = self.last_activity_time.is_some_and(|last| {
@@ -400,12 +404,12 @@ impl ZellijPlugin for State {
                             self.event_log_io
                                 .save(self.discovery.initial_cwd.clone(), data);
                         } else {
-                            eprintln!("[crumbeez] Failed to serialize event log");
+                            error!("Failed to serialize event log");
                         }
                         self.last_summary_time = Some(SystemTime::now());
                     }
                 } else {
-                    eprintln!("[crumbeez] Skipping summary - no new activity since last summary");
+                    debug!("Skipping summary - no new activity since last summary");
                 }
                 self.reset_inactivity_timer();
                 true

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info};
 use zellij_tile::prelude::*;
 
 use crumbeez_lib::{EventLog, Summary};
@@ -43,17 +44,17 @@ impl EventLogIO {
     }
 
     pub fn set_log_path(&mut self, path: PathBuf) {
-        eprintln!("[crumbeez] Event log path set to: {:?}", path);
+        debug!(path = ?path, "Event log path set");
         self.log_path = Some(path);
     }
 
     pub fn load(&mut self, cwd: PathBuf) {
         let Some(log_path) = &self.log_path else {
-            eprintln!("[crumbeez] No log path set for load");
+            error!("No log path set for load");
             return;
         };
         let path_str = log_path.to_string_lossy().into_owned();
-        eprintln!("[crumbeez] Loading event log from: {}", path_str);
+        debug!(path = %path_str, "Loading event log");
         let base64_cmd = format!("if [ -f '{}' ]; then base64 '{}'; fi", path_str, path_str);
         run_command_with_env_variables_and_cwd(
             &["sh", "-c", &base64_cmd],
@@ -65,16 +66,16 @@ impl EventLogIO {
 
     pub fn save(&mut self, cwd: PathBuf, data: Vec<u8>) {
         let Some(log_path) = &self.log_path else {
-            eprintln!("[crumbeez] No log path set for save");
+            error!("No log path set for save");
             return;
         };
         let path_str = log_path.to_string_lossy().into_owned();
         let b64 = base64_encode(&data);
-        eprintln!(
-            "[crumbeez] Saving {} bytes to {} (b64 len: {})",
-            data.len(),
-            path_str,
-            b64.len()
+        info!(
+            bytes = data.len(),
+            b64_len = b64.len(),
+            path = %path_str,
+            "Saving event log"
         );
         let cmd = format!("printf '%s' '{}' | base64 -d > '{}'", b64, path_str);
         self.pending_write = Some(data);
@@ -103,27 +104,24 @@ impl EventLogIO {
 
         match purpose {
             EventLogCommand::ReadEventLog => {
-                eprintln!("[crumbeez] ReadEventLog result: exit_code={:?}", exit_code);
+                debug!(?exit_code, "ReadEventLog result");
                 if exit_code == Some(0) && !stdout.is_empty() {
                     let b64_str = String::from_utf8_lossy(stdout);
                     if let Some(decoded) = base64_decode(&b64_str) {
                         if let Ok(loaded_log) = EventLog::deserialize(&decoded) {
-                            eprintln!(
-                                "[crumbeez] Loaded {} events from disk",
-                                loaded_log.total_count()
-                            );
+                            info!(count = loaded_log.total_count(), "Loaded events from disk");
                             *event_log = loaded_log;
                         } else {
-                            eprintln!("[crumbeez] Failed to deserialize event log");
+                            error!("Failed to deserialize event log");
                         }
                     } else {
-                        eprintln!("[crumbeez] Failed to decode base64");
+                        error!("Failed to decode base64");
                     }
                 }
                 true
             }
             EventLogCommand::WriteEventLog => {
-                eprintln!("[crumbeez] WriteEventLog result: exit_code={:?}", exit_code);
+                debug!(?exit_code, "WriteEventLog result");
                 self.pending_write = None;
                 true
             }

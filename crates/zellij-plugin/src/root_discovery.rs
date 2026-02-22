@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info};
 use zellij_tile::prelude::*;
 
 pub use crumbeez_lib::DiscoveryPhase;
@@ -106,9 +107,9 @@ impl RootDiscovery {
         }
 
         // Not a git repo — use initial_cwd as root
-        eprintln!(
-            "[crumbeez] Not a git repo, using initial_cwd: {:?}",
-            self.initial_cwd
+        debug!(
+            path = ?self.initial_cwd,
+            "Not a git repo, using initial_cwd"
         );
         self.create_crumbeez_dirs(vec![self.initial_cwd.clone()]);
         true
@@ -132,9 +133,9 @@ impl RootDiscovery {
             let superproject = String::from_utf8_lossy(stdout).trim().to_string();
             if !superproject.is_empty() {
                 let parent_path = PathBuf::from(&superproject);
-                eprintln!(
-                    "[crumbeez] Submodule detected. Parent repo: {:?}",
-                    parent_path
+                info!(
+                    parent = ?parent_path,
+                    "Submodule detected"
                 );
                 self.parent_git_root = Some(parent_path.clone());
                 roots.push(parent_path);
@@ -153,12 +154,12 @@ impl RootDiscovery {
         {
             if exit_code != Some(0) {
                 let err = String::from_utf8_lossy(stderr);
-                eprintln!("[crumbeez] mkdir failed: {}", err);
+                error!(%err, "mkdir failed");
             }
 
             *pending = pending.saturating_sub(1);
             if *pending == 0 {
-                eprintln!("[crumbeez] Root discovery complete. Dirs: {:?}", dirs);
+                info!(?dirs, "Root discovery complete");
                 // Move dirs out of CreatingDirs into Ready
                 let dirs = dirs.clone();
                 self.phase = DiscoveryPhase::Ready { dirs };
@@ -191,9 +192,9 @@ impl RootDiscovery {
                 purpose_context(CommandPurpose::MkdirCrumbeez),
             );
 
-            eprintln!(
-                "[crumbeez] Creating .crumbeez dir at: {:?}",
-                crumbeez_lib::crumbeez_dir(root)
+            debug!(
+                path = ?crumbeez_lib::crumbeez_dir(root),
+                "Creating .crumbeez dir"
             );
         }
 
