@@ -3,10 +3,12 @@ version: "0.1.0"
 minimum_zellij_version: "0.41.0"
 
 exec:
-	plugin_location: "target/wasm32-wasip1/debug/crumbeez.wasm"
+  plugin_location: "target/wasm32-wasip1/debug/crumbeez.wasm"
 
 permissions:
   - ReadApplicationState
   - RunCommands
+  - InterceptInput
+  - WriteToStdin
   - WebAccess
 
