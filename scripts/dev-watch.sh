@@ -6,7 +6,7 @@
 # WASM plugin.  After a successful build the new binary is at
 #   target/wasm32-wasip1/debug/crumbeez.wasm
 #
-# To reload the running plugin press Ctrl+Shift+r (handled by the
+# To reload the running plugin press F5 (handled by the
 # develop-rust-plugin helper loaded in the layout).
 # ──────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -23,9 +23,9 @@ banner() {
     echo -e "${CYAN}────────────────────────────────────────${RESET}"
     echo -e "  Watching ${BOLD}crates/${RESET} and ${BOLD}Cargo.toml${RESET} for changes"
     echo ""
-    echo -e "  ${BOLD}${YELLOW}┌─────────────────────────────────────┐${RESET}"
-    echo -e "  ${BOLD}${YELLOW}│  Ctrl+Shift+r  →  rebuild & reload  │${RESET}"
-    echo -e "  ${BOLD}${YELLOW}└─────────────────────────────────────┘${RESET}"
+    echo -e "  ${BOLD}${YELLOW}┌───────────────────────────┐${RESET}"
+    echo -e "  ${BOLD}${YELLOW}│  F5  →  rebuild & reload  │${RESET}"
+    echo -e "  ${BOLD}${YELLOW}└───────────────────────────┘${RESET}"
     echo ""
     echo -e "  ${CYAN}First launch?${RESET} Grant permissions to the"
     echo -e "  ${BOLD}develop-rust-plugin${RESET} pane below (press ${BOLD}y${RESET})."
@@ -55,9 +55,9 @@ watch_with_cargo_watch() {
         --watch Cargo.toml \
         -s 'if cargo build 2>&1; then
                 printf "\n\033[0;32m✅ Build succeeded\033[0m\n"
-                printf "\033[1;33m   ╭──────────────────────────────────────╮\033[0m\n"
-                printf "\033[1;33m   │  Press Ctrl+Shift+r to reload now!  │\033[0m\n"
-                printf "\033[1;33m   ╰──────────────────────────────────────╯\033[0m\n"
+                printf "\033[1;33m   ╭───────────────────────────╮\033[0m\n"
+                printf "\033[1;33m   │  Press F5 to reload now!  │\033[0m\n"
+                printf "\033[1;33m   ╰───────────────────────────╯\033[0m\n"
             else
                 printf "\n\033[0;31m❌ Build failed\033[0m  —  fix the errors above\n"
             fi'
@@ -72,9 +72,9 @@ watch_with_inotifywait() {
         echo -e "\n${YELLOW}Change detected — building...${RESET}\n"
         if cargo build 2>&1; then
             echo -e "\n${GREEN}✅ Build succeeded${RESET}"
-            echo -e "${BOLD}${YELLOW}   ╭──────────────────────────────────────╮${RESET}"
-            echo -e "${BOLD}${YELLOW}   │  Press Ctrl+Shift+r to reload now!  │${RESET}"
-            echo -e "${BOLD}${YELLOW}   ╰──────────────────────────────────────╯${RESET}"
+            echo -e "${BOLD}${YELLOW}   ╭───────────────────────────╮${RESET}"
+            echo -e "${BOLD}${YELLOW}   │  Press F5 to reload now!  │${RESET}"
+            echo -e "${BOLD}${YELLOW}   ╰───────────────────────────╯${RESET}"
         else
             echo -e "\n${RED}❌ Build failed${RESET}  —  fix the errors above"
         fi
