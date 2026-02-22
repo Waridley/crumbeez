@@ -1,8 +1,12 @@
+mod event_log;
+
 use std::collections::VecDeque;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+pub use event_log::{EventLog, EventLogError, LogEntry, Summary};
 
 // ── Directory layout constants ───────────────────────────────────
 
@@ -15,6 +19,9 @@ pub const SCRATCH_DIR: &str = "scratchpad";
 /// Subdirectory for human-readable summary logs (Markdown).
 pub const SUMMARIES_SUBDIR: &str = "summaries";
 
+/// Event log file name (stored in scratchpad directory).
+pub const EVENT_LOG_FILE: &str = "events.bin";
+
 // ── Directory layout helpers ─────────────────────────────────────
 
 /// Returns the `.crumbeez` directory path for a given project root.
@@ -25,6 +32,16 @@ pub fn crumbeez_dir(root: &Path) -> PathBuf {
 /// Returns the temporary scratch directory path for a given project root.
 pub fn scratch_dir(root: &Path) -> PathBuf {
     crumbeez_dir(root).join(SCRATCH_DIR)
+}
+
+/// Returns the event log file path for a given project root.
+pub fn event_log_path(root: &Path) -> PathBuf {
+    scratch_dir(root).join(EVENT_LOG_FILE)
+}
+
+/// Returns the event log file path given the `.crumbeez` directory directly.
+pub fn event_log_path_from_crumbeez_dir(crumbeez_dir: &Path) -> PathBuf {
+    crumbeez_dir.join(SCRATCH_DIR).join(EVENT_LOG_FILE)
 }
 
 /// Returns the summaries subdirectory path for a given project root.
