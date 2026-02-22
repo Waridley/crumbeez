@@ -31,7 +31,7 @@ layout {
             pane split_direction="vertical" {
                 // Left 60%: Editor + Terminal — opens src/main.rs in $EDITOR / $VISUAL
                 pane split_direction="horizontal" size="60%" {
-                    pane edit="crates/zellij-plugin/src/main.rs" name="editor" size="70%"
+                    pane edit="./README.md" name="editor" size="70%"
                     pane
                 }
                 // Right 40%: build watcher, plugin preview, and dev helper

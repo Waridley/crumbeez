@@ -7,5 +7,5 @@ edition = "2021"
 crumbeez-lib = { path = "../crumbeez-lib" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-zellij-tile = "0.41.0"
+zellij-tile = "0.43.1"
 
