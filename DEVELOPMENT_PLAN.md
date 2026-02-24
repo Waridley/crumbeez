@@ -289,8 +289,8 @@ PaneRenderReport (HashMap<PaneId, PaneContents>)
    Emit: "[50×] Building..."
    ```
 
-5. **ANSI Stripping**:
-   - Strip colors/formatting before logging
+5. **ANSI Code Analysis** (no stripping):
+   - Preserve ANSI codes in logged content for LLM context
    - Use control codes to detect program type:
      - Cursor positioning (`\x1b[;H`) → TUI
      - Clear screen (`\x1b[2J`) → TUI

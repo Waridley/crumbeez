@@ -134,6 +134,11 @@ pub enum KeystrokeEvent {
     /// startup).  This is a context boundary: subsequent keystrokes are being
     /// sent to a different program.
     PaneFocused(PaneFocusedEvent),
+
+    /// Output captured from a terminal pane.  Emitted when a semantic boundary
+    /// is detected (pane switch, shell prompt, buffer full, etc.).
+    /// Only produced when the `pane-content-tracking` feature is active.
+    PaneOutput(PaneOutputEvent),
 }
 
 impl fmt::Display for KeystrokeEvent {
@@ -147,6 +152,7 @@ impl fmt::Display for KeystrokeEvent {
             Self::FunctionKey(n) => write!(f, "F{}", n),
             Self::SystemKey(k) => write!(f, "sys {}", k),
             Self::PaneFocused(p) => write!(f, "focus → {}", p),
+            Self::PaneOutput(o) => write!(f, "pane-output {}", o),
         }
     }
 }
@@ -374,6 +380,76 @@ impl fmt::Display for PaneFocusedEvent {
 
         write!(f, "{}", self.pane_title)
     }
+}
+
+// ── PaneOutputEvent ──────────────────────────────────────────────
+
+/// Captured output from a terminal pane, emitted at a semantic boundary.
+///
+/// The `content` field holds the processed/compressed text ready for logging.
+/// `raw_lines` records how many raw lines were consumed to produce it, giving
+/// the LLM context like "[50 lines → 3]".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaneOutputEvent {
+    /// The numeric pane id (matches zellij's `PaneId::Terminal`).
+    pub pane_id: u32,
+    /// The pane title as shown in the Zellij UI at the time of emission.
+    pub pane_title: String,
+    /// The foreground command reported by the pane, if any (e.g. `"cargo"`).
+    pub command: Option<String>,
+    /// Classification of the captured output.
+    pub output_type: OutputType,
+    /// Processed content (preserves ANSI for LLM context, deduped, compressed).
+    pub content: String,
+    /// Number of raw viewport lines that were consumed to produce `content`.
+    pub raw_lines: usize,
+    /// Why this event was emitted now.
+    pub trigger: OutputTrigger,
+}
+
+impl fmt::Display for PaneOutputEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cmd = self.command.as_deref().unwrap_or("?");
+        write!(
+            f,
+            "[pane {}] {} ({:?}, {} raw lines, {:?}): {}",
+            self.pane_id,
+            cmd,
+            self.output_type,
+            self.raw_lines,
+            self.trigger,
+            // Truncate very long content for Display
+            if self.content.len() > 80 {
+                format!("{}…", &self.content[..80])
+            } else {
+                self.content.clone()
+            }
+        )
+    }
+}
+
+/// Classification of captured pane output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum OutputType {
+    /// Complete viewport snapshot (first capture or after TUI mode).
+    Full,
+    /// Only the lines added since the last emission (stdio mode).
+    Diff,
+    /// Final state of a progress indicator (e.g. download/build bar).
+    ProgressFinal,
+    /// Output was too large; truncated with a "N lines omitted" note.
+    Truncated,
+}
+
+/// Why a `PaneOutputEvent` was emitted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum OutputTrigger {
+    /// User switched focus away from this pane.
+    PaneSwitch,
+    /// A shell prompt was detected, indicating a command completed.
+    CommandExit,
+    /// The accumulation buffer hit the maximum-lines threshold.
+    MaxAccumulated,
 }
 
 // ── KeystrokeActivity ────────────────────────────────────────────

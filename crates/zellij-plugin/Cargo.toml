@@ -3,11 +3,22 @@ name = "crumbeez"
 version = "0.1.0"
 edition = "2021"
 
+# Feature flag for the pane-content-tracking feature, which depends on a
+# zellij API that is merged on github but not yet in a release.  When the new
+# zellij version ships, this feature can be removed (the tracking becomes
+# unconditional) and zellij-tile can be switched back to the released version.
+[features]
+pane-content-tracking = []
+
 [dependencies]
 crumbeez-lib = { path = "../crumbeez-lib" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-zellij-tile = "0.43.1"
+# The PaneRenderReport API (used by pane-content-tracking) was merged into
+# zellij main after the 0.43.1 release.  This branch points at the post-merge
+# main until a new release is cut, at which point we switch back to a version
+# number and fold the feature into the default build.
+zellij-tile = { git = "https://github.com/zellij-org/zellij.git", branch = "main" }
 
