@@ -190,7 +190,150 @@ impl ZellijPlugin for State {
 }
 ```
 
-## Step 6: Integrate LLM API
+
+## Step 6: Pane Content Tracking
+
+The plugin needs to read pane contents to capture command output, build errors, file views, etc. This is critical for generating useful summaries but must be done carefully to avoid spamming the LLM context.
+
+### Architecture
+
+```
+crates/zellij-plugin/src/
+├── pane_content/
+│   ├── mod.rs           # Public interface
+│   ├── tracker.rs       # Per-pane state tracking
+│   ├── processor.rs     # Content diffing/compression
+│   ├── strategies/
+│   │   ├── mod.rs       # Strategy trait + dispatcher
+│   │   ├── stdio.rs     # Default: line-based, dedup
+│   │   ├── tui.rs       # Cursor movement detection → snapshot
+│   │   └── progress.rs  # \r detection → condense progress
+│   └── detectors/
+│       ├── mod.rs       # Program detection trait
+│       └── control_chars.rs  # ANSI/control char analysis
+```
+
+### Core Types
+
+```rust
+// Add to KeystrokeEvent enum in crumbeez-lib
+pub enum KeystrokeEvent {
+    // ... existing variants ...
+    PaneOutput(PaneOutputEvent),
+}
+
+pub struct PaneOutputEvent {
+    pub pane_id: u32,
+    pub pane_title: String,
+    pub command: Option<String>,
+    pub output_type: OutputType,
+    pub content: String,           // Processed/compressed
+    pub raw_lines: usize,          // For transparency ("50 lines compressed to 3")
+    pub trigger: OutputTrigger,    // Why we emitted this
+}
+
+pub enum OutputType {
+    Full,           // Initial capture or TUI snapshot
+    Diff,           // New lines added
+    ProgressFinal,  // Final state of a progress indicator
+    Truncated,      // Large output, truncated with summary
+}
+
+pub enum OutputTrigger {
+    PaneSwitch,     // User switched away from this pane
+    CommandExit,    // Detected shell prompt / exit
+    MaxAccumulated, // Buffer full, forced emit
+}
+```
+
+### Content Processing Pipeline
+
+```
+PaneRenderReport (HashMap<PaneId, PaneContents>)
+       ↓
+  Per-pane Tracker
+  (hash compare → skip if unchanged)
+       ↓
+  Control Char Analysis
+  (detect TUI vs stdio vs progress)
+       ↓
+  Strategy Selection
+  (future: program-specific overrides)
+       ↓
+  Diff/Compress
+  (dedupe repeated lines, strip ANSI, truncate)
+       ↓
+  Accumulate in Buffer
+       ↓
+  Emit on Boundary
+  (pane switch, command exit, buffer full)
+```
+
+### Key Implementation Details
+
+1. **Watch All Panes**: Subscribe to `PaneRenderReport` for ALL terminal panes, not just focused. Background tasks matter.
+
+2. **Diffing Strategy**:
+   - Store last viewport as `Vec<String>` per pane
+   - For stdio: compute new lines = current - last (by line hash)
+   - For TUI: if cursor positioning codes detected, store full snapshot
+
+3. **Progress Bar Compression**:
+   - Detect `\r` (carriage return without newline) → in-place update
+   - Track "progress lines" separately
+   - Emit only the final state when newline appears or content changes
+
+4. **Repeated Line Deduplication**:
+   ```
+   Instead of: "Building...\n" (50 times)
+   Emit: "[50×] Building..."
+   ```
+
+5. **ANSI Stripping**:
+   - Strip colors/formatting before logging
+   - Use control codes to detect program type:
+     - Cursor positioning (`\x1b[;H`) → TUI
+     - Clear screen (`\x1b[2J`) → TUI
+     - Color codes only → stdio with colors
+
+6. **Semantic Boundary Detection**:
+   - Emit accumulated output when:
+     - User switches panes
+     - Shell prompt detected (regex match on last line)
+     - Buffer exceeds threshold
+   - Future: quiescence timeout (configurable)
+
+### Future Extensibility
+
+The `strategies/` module uses a trait-based approach for program-specific handlers:
+
+```rust
+pub trait ContentStrategy: Send + Sync {
+    fn process(&self, input: &str, state: &mut StrategyState) -> ProcessResult;
+    fn should_emit(&self, state: &StrategyState) -> bool;
+    fn detect(&self, content: &str) -> DetectionConfidence;
+}
+```
+
+This allows adding handlers for:
+- `cargo` / `npm` build output
+- `git` commands
+- `man` pages
+- Test runners
+- etc.
+
+### Implementation Order
+
+1. `pane_content/mod.rs` + `tracker.rs` - Basic pane tracking with hash-based deduplication
+2. `pane_content/processor.rs` - Diffing logic
+3. `pane_content/strategies/stdio.rs` - Default strategy with line deduplication
+4. `pane_content/strategies/tui.rs` - TUI detection and snapshot mode
+5. `pane_content/strategies/progress.rs` - Progress bar compression
+6. Integration with `KeystrokeEvent` and event logging
+7. Future: Program-specific strategies, quiescence detection, configuration
+
+
+## Step 7: Integrate LLM API
 
 Add web request capability:
 
@@ -249,7 +392,7 @@ Event::WebRequestResult(status, headers, body, context) => {
 }
 ```
 
-## Step 7: Build Release Version
+## Step 8: Build Release Version
 
 When ready to use:
 
