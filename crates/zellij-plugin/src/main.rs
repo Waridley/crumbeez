@@ -1,5 +1,7 @@
 mod event_log_io;
 mod keystroke;
+#[cfg(feature = "pane-content-tracking")]
+mod pane_content;
 mod root_discovery;
 
 use std::collections::{BTreeMap, HashMap};
@@ -29,6 +31,8 @@ struct State {
     live_cursor: usize,
     last_activity_time: Option<SystemTime>,
     last_summary_time: Option<SystemTime>,
+    #[cfg(feature = "pane-content-tracking")]
+    pane_registry: pane_content::PaneRegistry,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,6 +240,15 @@ impl State {
             self.trigger_summary_for_pane_switch();
         }
 
+        // Notify the pane registry that focus has moved (flushes old pane).
+        #[cfg(feature = "pane-content-tracking")]
+        if let Some(pane_event) = self.pane_registry.on_focus_changed(pane.id) {
+            self.event_log.append(
+                KeystrokeEvent::PaneOutput(pane_event),
+                Self::current_time_ms(),
+            );
+        }
+
         // Switch to new pane and reset activity flag
         self.focused_pane = Some(new_fp);
         self.current_pane_has_activity = false;
@@ -282,22 +295,26 @@ impl ZellijPlugin for State {
             .with_target(false)
             .try_init();
 
-        request_permission(&[
+        #[cfg(feature = "pane-content-tracking")]
+        let permissions = vec![
             PermissionType::ReadApplicationState,
             PermissionType::RunCommands,
-            // InterceptInput: receive every keystroke session-wide via
-            // InterceptedKeyPress.  We immediately re-forward each key back to
-            // the focused pane so the user's input is not swallowed.
             PermissionType::InterceptInput,
-            // WriteToStdin: needed to forward the intercepted keys back.
             PermissionType::WriteToStdin,
-        ]);
+            PermissionType::ReadPaneContents,
+        ];
+        #[cfg(not(feature = "pane-content-tracking"))]
+        let permissions = vec![
+            PermissionType::ReadApplicationState,
+            PermissionType::RunCommands,
+            PermissionType::InterceptInput,
+            PermissionType::WriteToStdin,
+        ];
+        request_permission(&permissions);
 
-        subscribe(&[
-            // Key fires only when the plugin pane itself has focus.
+        #[cfg(feature = "pane-content-tracking")]
+        let event_types = vec![
             EventType::Key,
-            // InterceptedKeyPress fires for every keystroke in any pane once
-            // the InterceptInput permission is granted.
             EventType::InterceptedKeyPress,
             EventType::PaneUpdate,
             EventType::TabUpdate,
@@ -305,7 +322,20 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::RunCommandResult,
             EventType::PermissionRequestResult,
-        ]);
+            EventType::PaneRenderReport,
+        ];
+        #[cfg(not(feature = "pane-content-tracking"))]
+        let event_types = vec![
+            EventType::Key,
+            EventType::InterceptedKeyPress,
+            EventType::PaneUpdate,
+            EventType::TabUpdate,
+            EventType::FileSystemUpdate,
+            EventType::Timer,
+            EventType::RunCommandResult,
+            EventType::PermissionRequestResult,
+        ];
+        subscribe(&event_types);
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -375,6 +405,20 @@ impl ZellijPlugin for State {
             Event::PaneUpdate(manifest) => {
                 self.handle_pane_update(manifest);
                 true
+            }
+            #[cfg(feature = "pane-content-tracking")]
+            Event::PaneRenderReport(report) => {
+                let events = self.pane_registry.ingest_report(report);
+                let had_events = !events.is_empty();
+                for pane_event in events {
+                    use crumbeez_lib::KeystrokeEvent;
+                    debug!(pane_id = pane_event.pane_id, "pane output event");
+                    self.event_log.append(
+                        KeystrokeEvent::PaneOutput(pane_event),
+                        Self::current_time_ms(),
+                    );
+                }
+                had_events
             }
             Event::Timer(elapsed) => {
                 debug!(elapsed_secs = ?elapsed, "Timer fired");

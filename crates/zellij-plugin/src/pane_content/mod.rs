@@ -70,25 +70,35 @@ impl PaneRegistry {
 
     /// Process a full `PaneRenderReport` payload.
     ///
-    /// Returns all `PaneOutputEvent`s that are ready to emit (may be empty).
+    /// Only processes the currently focused pane to avoid flooding the event
+    /// log with updates from background panes. Returns any `PaneOutputEvent`s
+    /// that are ready to emit (may be empty).
     pub fn ingest_report(&mut self, report: HashMap<PaneId, PaneContents>) -> Vec<PaneOutputEvent> {
         let mut events = Vec::new();
+
+        // Only process the focused pane; background panes are ignored until
+        // they gain focus (at which point on_focus_changed() flushes the old).
+        let focused = match self.focused_pane_id {
+            Some(id) => id,
+            None => return events,
+        };
 
         for (pane_id, contents) in report {
             let id = match pane_id {
                 PaneId::Terminal(n) => n,
-                PaneId::Plugin(_) => continue, // don't track plugin panes
+                PaneId::Plugin(_) => continue,
             };
+
+            if id != focused {
+                continue;
+            }
 
             let tracker = self
                 .trackers
                 .entry(id)
                 .or_insert_with(|| PaneTracker::new(id, String::new(), None));
 
-            // Use MaxAccumulated trigger for background updates; PaneSwitch is
-            // handled separately via on_focus_changed().
-            let trigger = OutputTrigger::MaxAccumulated;
-            if let Some(event) = tracker.ingest(&contents.viewport, trigger) {
+            if let Some(event) = tracker.ingest(&contents.viewport, OutputTrigger::MaxAccumulated) {
                 events.push(event);
             }
         }
