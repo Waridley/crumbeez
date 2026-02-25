@@ -13,14 +13,18 @@ pub use event_log::{EventLog, EventLogError, LogEntry, Summary};
 /// Name of the crumbeez data directory created at each project root.
 pub const CRUMBEEZ_DIR_NAME: &str = ".crumbeez";
 
-/// Subdirectory for temporary data that might be relevant to summaries but has not yet been summarized in the output.
+/// Subdirectory for temporary data (event log, etc.) stored in the global data
+/// directory rather than inside the project repository.
 pub const SCRATCH_DIR: &str = "scratchpad";
 
-/// Subdirectory for human-readable summary logs (Markdown).
+/// Subdirectory for human-readable summary logs (Markdown), stored in-repo.
 pub const SUMMARIES_SUBDIR: &str = "summaries";
 
-/// Event log file name (stored in scratchpad directory).
+/// Event log file name (stored in the global scratchpad directory).
 pub const EVENT_LOG_FILE: &str = "events.bin";
+
+/// Application name used as the top-level directory under `$XDG_DATA_HOME`.
+pub const APP_DATA_DIR_NAME: &str = "crumbeez";
 
 // ── Directory layout helpers ─────────────────────────────────────
 
@@ -29,29 +33,44 @@ pub fn crumbeez_dir(root: &Path) -> PathBuf {
     root.join(CRUMBEEZ_DIR_NAME)
 }
 
-/// Returns the temporary scratch directory path for a given project root.
-pub fn scratch_dir(root: &Path) -> PathBuf {
-    crumbeez_dir(root).join(SCRATCH_DIR)
-}
-
-/// Returns the event log file path for a given project root.
-pub fn event_log_path(root: &Path) -> PathBuf {
-    scratch_dir(root).join(EVENT_LOG_FILE)
-}
-
-/// Returns the event log file path given the `.crumbeez` directory directly.
-pub fn event_log_path_from_crumbeez_dir(crumbeez_dir: &Path) -> PathBuf {
-    crumbeez_dir.join(SCRATCH_DIR).join(EVENT_LOG_FILE)
-}
-
 /// Returns the summaries subdirectory path for a given project root.
 pub fn summaries_dir(root: &Path) -> PathBuf {
     crumbeez_dir(root).join(SUMMARIES_SUBDIR)
 }
 
-/// Returns all directories that must exist for a given project root.
-pub fn required_dirs(root: &Path) -> Vec<PathBuf> {
-    vec![scratch_dir(root), summaries_dir(root)]
+/// Returns all in-repo directories that must exist for a given project root.
+pub fn required_project_dirs(root: &Path) -> Vec<PathBuf> {
+    vec![summaries_dir(root)]
+}
+
+/// Compute a stable, human-readable slug for a project root path.
+///
+/// Format: `<dirname>-<8-hex-blake3>` where the hash is over the full
+/// canonical path bytes.  Example: `crumbeez-a1b2c3d4`.
+pub fn data_dir_slug(root: &Path) -> String {
+    let dir_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_else(|| root.to_string_lossy());
+    let hash = blake3::hash(root.to_string_lossy().as_bytes());
+    let hex = hash.to_hex();
+    // Take first 8 hex chars for a short but collision-resistant suffix.
+    format!("{}-{}", dir_name, &hex[..8])
+}
+
+/// Returns the global scratchpad directory for a project.
+///
+/// Layout: `<data_home>/crumbeez/<slug>/scratchpad/`
+pub fn global_scratch_dir(data_home: &Path, root: &Path) -> PathBuf {
+    data_home
+        .join(APP_DATA_DIR_NAME)
+        .join(data_dir_slug(root))
+        .join(SCRATCH_DIR)
+}
+
+/// Returns the event log file path within the global scratchpad.
+pub fn event_log_path(data_home: &Path, root: &Path) -> PathBuf {
+    global_scratch_dir(data_home, root).join(EVENT_LOG_FILE)
 }
 
 // ── Discovery phase ──────────────────────────────────────────────
@@ -66,10 +85,27 @@ pub enum DiscoveryPhase {
     FindingGitRoot,
     /// Fired `git rev-parse --show-superproject-working-tree`, waiting for result.
     FindingSuperproject,
+    /// Resolving `$XDG_DATA_HOME` (or `$HOME/.local/share`) for the global
+    /// scratchpad directory.
+    ResolvingDataDir {
+        /// Project roots discovered so far (git root, optional superproject).
+        roots: Vec<PathBuf>,
+    },
     /// Fired `mkdir -p` commands, waiting for them to complete.
-    CreatingDirs { pending: usize, dirs: Vec<PathBuf> },
-    /// All .crumbeez directories have been created and are ready.
-    Ready { dirs: Vec<PathBuf> },
+    CreatingDirs {
+        pending: usize,
+        /// In-repo `.crumbeez` directories (one per project root).
+        project_dirs: Vec<PathBuf>,
+        /// Global scratchpad directory for the primary project root.
+        scratch_dir: PathBuf,
+    },
+    /// All directories have been created and are ready.
+    Ready {
+        /// In-repo `.crumbeez` directories (for summaries, etc.).
+        project_dirs: Vec<PathBuf>,
+        /// Global scratchpad directory for the primary project root.
+        scratch_dir: PathBuf,
+    },
     /// Discovery failed with an error message.
     Failed(String),
 }
@@ -80,12 +116,21 @@ impl fmt::Display for DiscoveryPhase {
             Self::AwaitingPermissions => write!(f, "⏳ Awaiting permissions..."),
             Self::FindingGitRoot => write!(f, "🔍 Finding git root..."),
             Self::FindingSuperproject => write!(f, "🔍 Checking for parent repo..."),
+            Self::ResolvingDataDir { .. } => write!(f, "🔍 Resolving data directory..."),
             Self::CreatingDirs { pending, .. } => {
-                write!(f, "📁 Creating .crumbeez dirs ({pending} remaining)...")
+                write!(f, "📁 Creating directories ({pending} remaining)...")
             }
-            Self::Ready { dirs } => {
-                let dirs: Vec<_> = dirs.iter().map(|d| d.to_string_lossy()).collect();
-                write!(f, "✅ Ready — {}", dirs.join(", "))
+            Self::Ready {
+                project_dirs,
+                scratch_dir,
+            } => {
+                let dirs: Vec<_> = project_dirs.iter().map(|d| d.to_string_lossy()).collect();
+                write!(
+                    f,
+                    "✅ Ready — projects: {}, scratch: {}",
+                    dirs.join(", "),
+                    scratch_dir.display()
+                )
             }
             Self::Failed(msg) => write!(f, "❌ Failed: {msg}"),
         }

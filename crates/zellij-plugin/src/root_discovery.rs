@@ -15,6 +15,7 @@ const CTX_PURPOSE: &str = "crumbeez_purpose";
 enum CommandPurpose {
     GitToplevel,
     GitSuperproject,
+    ResolveDataDir,
     MkdirCrumbeez,
 }
 
@@ -78,6 +79,7 @@ impl RootDiscovery {
             CommandPurpose::GitSuperproject => {
                 self.handle_git_superproject(exit_code, stdout, stderr)
             }
+            CommandPurpose::ResolveDataDir => self.handle_resolve_data_dir(exit_code, stdout),
             CommandPurpose::MkdirCrumbeez => self.handle_mkdir_result(exit_code, stderr),
         }
     }
@@ -111,7 +113,7 @@ impl RootDiscovery {
             path = ?self.initial_cwd,
             "Not a git repo, using initial_cwd"
         );
-        self.create_crumbeez_dirs(vec![self.initial_cwd.clone()]);
+        self.resolve_data_dir(vec![self.initial_cwd.clone()]);
         true
     }
 
@@ -142,14 +144,55 @@ impl RootDiscovery {
             }
         }
 
-        self.create_crumbeez_dirs(roots);
+        self.resolve_data_dir(roots);
+        true
+    }
+
+    fn resolve_data_dir(&mut self, roots: Vec<PathBuf>) {
+        self.phase = DiscoveryPhase::ResolvingDataDir {
+            roots: roots.clone(),
+        };
+
+        // Resolve XDG_DATA_HOME with fallback to $HOME/.local/share
+        run_command_with_env_variables_and_cwd(
+            &[
+                "sh",
+                "-c",
+                r#"echo "${XDG_DATA_HOME:-$HOME/.local/share}""#,
+            ],
+            BTreeMap::new(),
+            self.initial_cwd.clone(),
+            purpose_context(CommandPurpose::ResolveDataDir),
+        );
+    }
+
+    fn handle_resolve_data_dir(&mut self, exit_code: Option<i32>, stdout: &[u8]) -> bool {
+        let roots = match &self.phase {
+            DiscoveryPhase::ResolvingDataDir { roots } => roots.clone(),
+            _ => {
+                error!(phase = ?self.phase, "Unexpected phase for ResolveDataDir");
+                return true;
+            }
+        };
+
+        if exit_code != Some(0) || stdout.is_empty() {
+            self.phase =
+                DiscoveryPhase::Failed("Could not resolve data home directory".to_string());
+            return true;
+        }
+
+        let data_home = PathBuf::from(String::from_utf8_lossy(stdout).trim());
+        info!(data_home = ?data_home, "Resolved data home");
+
+        self.create_dirs(roots, data_home);
         true
     }
 
     fn handle_mkdir_result(&mut self, exit_code: Option<i32>, stderr: &[u8]) -> bool {
         if let DiscoveryPhase::CreatingDirs {
             ref mut pending,
-            ref dirs,
+            ref project_dirs,
+            ref scratch_dir,
         } = self.phase
         {
             if exit_code != Some(0) {
@@ -159,48 +202,60 @@ impl RootDiscovery {
 
             *pending = pending.saturating_sub(1);
             if *pending == 0 {
-                info!(?dirs, "Root discovery complete");
-                // Move dirs out of CreatingDirs into Ready
-                let dirs = dirs.clone();
-                self.phase = DiscoveryPhase::Ready { dirs };
+                info!(?project_dirs, ?scratch_dir, "Root discovery complete");
+                let project_dirs = project_dirs.clone();
+                let scratch_dir = scratch_dir.clone();
+                self.phase = DiscoveryPhase::Ready {
+                    project_dirs,
+                    scratch_dir,
+                };
             }
         }
         true
     }
 
-    fn create_crumbeez_dirs(&mut self, roots: Vec<PathBuf>) {
-        let count = roots.len();
-        let dirs: Vec<PathBuf> = roots
+    fn create_dirs(&mut self, roots: Vec<PathBuf>, data_home: PathBuf) {
+        let project_dirs: Vec<PathBuf> = roots
             .iter()
             .map(|r| crumbeez_lib::crumbeez_dir(r))
             .collect();
 
+        // The primary root is the first one (git root or initial_cwd).
+        let primary_root = &roots[0];
+        let scratch_dir = crumbeez_lib::global_scratch_dir(&data_home, primary_root);
+
+        // Collect all directories that need to be created:
+        // - In-repo summaries dirs for each project root
+        // - Global scratchpad dir for the primary root
+        let mut all_dirs: Vec<String> = Vec::new();
         for root in &roots {
-            let mkdir_args: Vec<String> = crumbeez_lib::required_dirs(root)
-                .into_iter()
-                .map(|d| d.to_string_lossy().into_owned())
-                .collect();
-            let mkdir_strs: Vec<&str> = mkdir_args.iter().map(|s| s.as_str()).collect();
-
-            let mut cmd: Vec<&str> = vec!["mkdir", "-p"];
-            cmd.extend_from_slice(&mkdir_strs);
-
-            run_command_with_env_variables_and_cwd(
-                &cmd,
-                BTreeMap::new(),
-                self.initial_cwd.clone(),
-                purpose_context(CommandPurpose::MkdirCrumbeez),
-            );
-
-            debug!(
-                path = ?crumbeez_lib::crumbeez_dir(root),
-                "Creating .crumbeez dir"
-            );
+            for dir in crumbeez_lib::required_project_dirs(root) {
+                all_dirs.push(dir.to_string_lossy().into_owned());
+            }
         }
+        all_dirs.push(scratch_dir.to_string_lossy().into_owned());
+
+        let dir_strs: Vec<&str> = all_dirs.iter().map(|s| s.as_str()).collect();
+        let mut cmd: Vec<&str> = vec!["mkdir", "-p"];
+        cmd.extend_from_slice(&dir_strs);
+
+        run_command_with_env_variables_and_cwd(
+            &cmd,
+            BTreeMap::new(),
+            self.initial_cwd.clone(),
+            purpose_context(CommandPurpose::MkdirCrumbeez),
+        );
+
+        debug!(
+            ?project_dirs,
+            ?scratch_dir,
+            "Creating project and scratchpad dirs"
+        );
 
         self.phase = DiscoveryPhase::CreatingDirs {
-            pending: count,
-            dirs,
+            pending: 1, // Single mkdir -p command for all dirs
+            project_dirs,
+            scratch_dir,
         };
     }
 }
