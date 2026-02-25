@@ -9,12 +9,12 @@
 /// a forced trigger arrives.
 use crumbeez_lib::{OutputTrigger, OutputType};
 
-use super::{ContentStrategy, ProcessResult, StrategyState};
+use super::{ContentStrategy, StrategyState};
 
 pub struct ProgressStrategy;
 
 impl ContentStrategy for ProgressStrategy {
-    fn process(&self, viewport: &[String], state: &mut StrategyState) -> ProcessResult {
+    fn process(&self, viewport: &[String], state: &mut StrategyState) {
         state.total_raw_lines = viewport.len();
 
         // The last non-empty line is the current progress state.
@@ -30,7 +30,6 @@ impl ContentStrategy for ProgressStrategy {
         }
 
         state.last_snapshot = Some(viewport.to_vec());
-        ProcessResult::pending()
     }
 
     fn should_emit(&self, state: &StrategyState, trigger: OutputTrigger) -> bool {

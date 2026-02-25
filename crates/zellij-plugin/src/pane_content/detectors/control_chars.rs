@@ -2,7 +2,7 @@
 ///
 /// The detector makes a single pass over the raw bytes and classifies the
 /// content into one of three modes that drive strategy selection downstream.
-
+///
 /// High-level classification of a pane's output mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneMode {

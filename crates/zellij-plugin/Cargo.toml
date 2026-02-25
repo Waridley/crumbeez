@@ -9,6 +9,7 @@ edition = "2021"
 # unconditional) and zellij-tile can be switched back to the released version.
 [features]
 pane-content-tracking = []
+default = ["pane-content-tracking"]
 
 [dependencies]
 crumbeez-lib = { path = "../crumbeez-lib" }

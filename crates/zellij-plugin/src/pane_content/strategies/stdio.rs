@@ -6,37 +6,15 @@
 /// threshold or when a forced trigger arrives (pane switch, command exit).
 use crumbeez_lib::{OutputTrigger, OutputType};
 
-use super::{ContentStrategy, ProcessResult, StrategyState};
+use super::{ContentStrategy, StrategyState};
 
 /// Emit when this many new lines have accumulated.
 const MAX_PENDING_LINES: usize = 200;
 
-/// Shell-prompt detection: last line matches this prefix heuristic.
-/// Covers common shells: bash (`$ `), zsh (`% `), fish (`> `), nu (`> `).
-///
-/// We check the *trimmed* interior but also the raw string for trailing
-/// prompt characters, since prompts usually end with a space after the sigil.
-fn looks_like_prompt(line: &str) -> bool {
-    if line.trim().is_empty() {
-        return false;
-    }
-    // Check raw line for typical prompt endings (with trailing space).
-    line.ends_with("$ ")
-        || line.ends_with("% ")
-        || line.ends_with("> ")
-        || line.ends_with("# ")
-        // nu-shell style with path segments
-        || line.contains(") > ")
-        || line.contains(") $ ")
-        // Trimmed variants for prompts without trailing space
-        || line.trim_end().ends_with('$')
-        || line.trim_end().ends_with('%')
-}
-
 pub struct StdioStrategy;
 
 impl ContentStrategy for StdioStrategy {
-    fn process(&self, viewport: &[String], state: &mut StrategyState) -> ProcessResult {
+    fn process(&self, viewport: &[String], state: &mut StrategyState) {
         // Compute new lines by finding the diff against last snapshot.
         let new_lines: Vec<String> = if let Some(ref last) = state.last_snapshot {
             // Build a set of hashes from the previous snapshot for O(n) diff.
@@ -63,14 +41,12 @@ impl ContentStrategy for StdioStrategy {
         state.total_raw_lines += new_lines.len();
 
         if new_lines.is_empty() {
-            return ProcessResult::pending();
+            return;
         }
 
         // Dedup consecutive identical lines into "[N×] line" entries.
         let deduped = run_length_encode(new_lines);
         state.pending_lines.extend(deduped);
-
-        ProcessResult::pending()
     }
 
     fn should_emit(&self, state: &StrategyState, trigger: OutputTrigger) -> bool {
@@ -153,20 +129,5 @@ mod tests {
         ];
         let result = run_length_encode(lines);
         assert_eq!(result, vec!["[2×] a", "b", "[3×] c"]);
-    }
-
-    #[test]
-    fn looks_like_prompt_bash() {
-        assert!(looks_like_prompt("user@host ~/project $ "));
-    }
-
-    #[test]
-    fn looks_like_prompt_zsh() {
-        assert!(looks_like_prompt("~/project % "));
-    }
-
-    #[test]
-    fn looks_like_prompt_false() {
-        assert!(!looks_like_prompt("    Building release target"));
     }
 }

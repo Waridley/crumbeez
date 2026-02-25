@@ -626,7 +626,7 @@ impl KeystrokeActivity {
                         self.coalesce_or_append(event);
                     }
                     NavDirection::End => {
-                        if let Some(_) = self.cursor {
+                        if self.cursor.is_some() {
                             if let Some(KeystrokeEvent::TextTyped(ref buf)) = self.events.back() {
                                 self.cursor = Some(buf.len());
                                 return;
@@ -762,7 +762,7 @@ fn word_left(s: &str, pos: usize) -> usize {
     // Skip trailing non-word chars, then skip the word.
     let mut iter = chars_before.iter().rev();
     // Skip leading whitespace/punctuation
-    while let Some(&(_, c)) = iter.next() {
+    for &(_, c) in iter.by_ref() {
         if c.is_alphanumeric() || c == '_' {
             break;
         }

@@ -48,10 +48,6 @@ pub struct PaneRegistry {
 }
 
 impl PaneRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Notify the registry that focus has moved to `new_pane_id`.
     ///
     /// Immediately flushes the previously-focused pane with a `PaneSwitch`
@@ -96,7 +92,7 @@ impl PaneRegistry {
             let tracker = self
                 .trackers
                 .entry(id)
-                .or_insert_with(|| PaneTracker::new(id, String::new(), None));
+                .or_insert_with(|| PaneTracker::new(id));
 
             if let Some(event) = tracker.ingest(&contents.viewport, OutputTrigger::MaxAccumulated) {
                 events.push(event);
@@ -104,19 +100,5 @@ impl PaneRegistry {
         }
 
         events
-    }
-
-    /// Update pane metadata (title, command) from a `PaneUpdate` event.
-    pub fn update_pane_meta(&mut self, pane_id: u32, title: String, command: Option<String>) {
-        if let Some(tracker) = self.trackers.get_mut(&pane_id) {
-            tracker.update_meta(title, command);
-        }
-        // If the pane isn't tracked yet we'll pick up the metadata on first
-        // PaneRenderReport.
-    }
-
-    /// Remove a pane from the registry (called when the pane closes).
-    pub fn remove_pane(&mut self, pane_id: u32) {
-        self.trackers.remove(&pane_id);
     }
 }

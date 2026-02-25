@@ -6,12 +6,12 @@
 /// meaningfully since the last snapshot, or when a forced trigger arrives.
 use crumbeez_lib::{OutputTrigger, OutputType};
 
-use super::{ContentStrategy, ProcessResult, StrategyState};
+use super::{ContentStrategy, StrategyState};
 
 pub struct TuiStrategy;
 
 impl ContentStrategy for TuiStrategy {
-    fn process(&self, viewport: &[String], state: &mut StrategyState) -> ProcessResult {
+    fn process(&self, viewport: &[String], state: &mut StrategyState) {
         state.total_raw_lines = viewport.len();
 
         let changed = match &state.last_snapshot {
@@ -25,8 +25,6 @@ impl ContentStrategy for TuiStrategy {
             // Store the new snapshot as the pending content.
             state.pending_lines = viewport.to_vec();
         }
-
-        ProcessResult::pending()
     }
 
     fn should_emit(&self, state: &StrategyState, trigger: OutputTrigger) -> bool {

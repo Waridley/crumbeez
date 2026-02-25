@@ -1,8 +1,9 @@
 /// Per-pane tracking state.
 ///
-/// `PaneTracker` wraps a [`Processor`] and attaches the pane-level metadata
-/// (id, title, command) needed to build a [`PaneOutputEvent`].  It also owns
-/// a hash of the last viewport to skip processing when nothing has changed.
+/// `PaneTracker` wraps a [`Processor`] and attaches the pane id needed to
+/// build a [`PaneOutputEvent`].  It also owns a hash of the last viewport
+/// to skip processing when nothing has changed.
+///
 /// Note: DefaultHasher is used for in-memory deduplication only; it does not
 /// guarantee stable hashing across runs or platforms and must not be used
 /// for persistence.
@@ -15,28 +16,18 @@ use crate::pane_content::processor::Processor;
 
 pub struct PaneTracker {
     pub pane_id: u32,
-    pub pane_title: String,
-    pub command: Option<String>,
     processor: Processor,
     /// Hash of the last viewport we processed; used to skip unchanged frames.
     last_viewport_hash: u64,
 }
 
 impl PaneTracker {
-    pub fn new(pane_id: u32, pane_title: String, command: Option<String>) -> Self {
+    pub fn new(pane_id: u32) -> Self {
         Self {
             pane_id,
-            pane_title,
-            command,
             processor: Processor::new(),
             last_viewport_hash: 0,
         }
-    }
-
-    /// Update the pane's title and command (from `PaneUpdate` events).
-    pub fn update_meta(&mut self, pane_title: String, command: Option<String>) {
-        self.pane_title = pane_title;
-        self.command = command;
     }
 
     /// Feed a new viewport snapshot.  Returns a [`PaneOutputEvent`] if the
@@ -59,38 +50,27 @@ impl PaneTracker {
             self.last_viewport_hash = h;
         }
 
-        if let Some((content, raw_lines, output_type)) = self.processor.flush(trigger) {
-            Some(PaneOutputEvent {
-                pane_id: self.pane_id,
-                pane_title: self.pane_title.clone(),
-                command: self.command.clone(),
-                output_type,
-                content,
-                raw_lines,
-                trigger,
-            })
-        } else {
-            None
-        }
+        self.build_event(trigger)
     }
 
     /// Flush accumulated content without ingesting new data.
     ///
     /// Used when focus changes to emit any pending content from the old pane.
     pub fn flush_only(&mut self, trigger: OutputTrigger) -> Option<PaneOutputEvent> {
-        if let Some((content, raw_lines, output_type)) = self.processor.flush(trigger) {
-            Some(PaneOutputEvent {
-                pane_id: self.pane_id,
-                pane_title: self.pane_title.clone(),
-                command: self.command.clone(),
-                output_type,
-                content,
-                raw_lines,
-                trigger,
-            })
-        } else {
-            None
-        }
+        self.build_event(trigger)
+    }
+
+    fn build_event(&mut self, trigger: OutputTrigger) -> Option<PaneOutputEvent> {
+        let (content, raw_lines, output_type) = self.processor.flush(trigger)?;
+        Some(PaneOutputEvent {
+            pane_id: self.pane_id,
+            pane_title: String::new(),
+            command: None,
+            output_type,
+            content,
+            raw_lines,
+            trigger,
+        })
     }
 }
 
