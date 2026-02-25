@@ -110,7 +110,7 @@ impl ZellijPlugin for State {
         request_permission(&[
             PermissionType::ReadApplicationState,
         ]);
-        
+
         subscribe(&[
             EventType::PaneUpdate,
             EventType::TabUpdate,
@@ -162,12 +162,12 @@ Use timers as a safety net rather than as the primary driver of summaries. In th
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         // ... existing code ...
-        
+
         subscribe(&[
             // ... existing subscriptions ...
             EventType::Timer,
         ]);
-        
+
         // Safety timer: ensure we checkpoint at least every 10 minutes if needed
         set_timeout(600.0);
     }
@@ -179,7 +179,7 @@ impl ZellijPlugin for State {
                 // (you’ll also call summarize_recent_events() when you detect logical
                 // task boundaries like a command or test run completing).
                 self.summarize_recent_events();
-                
+
                 // Reset timer
                 set_timeout(600.0);
                 true
@@ -189,6 +189,50 @@ impl ZellijPlugin for State {
     }
 }
 ```
+
+
+### Steps 5a–5e: Hierarchical Summary System
+
+The summarization system uses a **three‑level tree** (leaf → section → session) rather than a flat list.
+Full design details — data model, storage format, rollup mechanics, LLM detail‑expansion protocol, and UI interaction — live in `SUMMARIES_DESIGN.md`. The sub‑steps below outline the implementation order.
+
+#### Step 5a: Summary Data Model (`crumbeez-lib/src/summary.rs`)
+
+Define the core types:
+
+- `SummaryNode { id, level, time_range, digest, body, children, event_range }` — a single summary at any level.
+- `SummaryTree` — ordered collection of `SummaryNode`s with helper methods (`add_leaf`, `pending_rollup`, `nodes_at_level`).
+- `DisplayNode` — flattened view of the tree for UI rendering (includes `depth`, `expanded`, `selected`).
+- Write unit tests for tree construction, rollup detection thresholds, and `DisplayNode` flattening.
+
+#### Step 5b: Summary File I/O (`summary_io.rs`)
+
+- **Write path**: append a `SummaryNode` as a YAML‑front‑matter + Markdown‑body block to the per‑session file (`.crumbeez/summaries/YYYY-MM-DD_HHMMSS_<session>.md`).
+- **Read path**: parse the file back into a `SummaryTree`, reconstructing the tree from `children` lists (no back‑patching needed).
+- In the WASM plugin, I/O goes through `run_command` + base64 encoding, following the same pattern as `EventLogIO`.
+
+#### Step 5c: Summarization Orchestrator (`summarization.rs`)
+
+- Implement a `SummarizationOrchestrator` that:
+  1. Receives raw events and produces **leaf summaries** (level 0) via the configured `SummarizationBackend`.
+  2. After each new leaf, checks whether enough leaves have accumulated to trigger a **section rollup** (level 1).
+  3. At session end / day boundary, triggers a **session rollup** (level 2).
+- During rollup, the orchestrator sends child digests to the backend. If the backend responds with `NEED_DETAIL: <id>`, the orchestrator provides the child's full body and re‑prompts (up to 2 rounds).
+- Start with a `NoOpBackend` that concatenates digests; the real LLM backend plugs in at Step 7.
+
+#### Step 5d: Wire Orchestrator into `main.rs`
+
+- Replace the current `pending_summaries: Vec<String>` with a `SummaryTree`.
+- Route `trigger_summary_for_pane_switch()` and timer checkpoints through the orchestrator.
+- Model async LLM calls as a `RollupPhase` state machine (similar to `RootDiscovery`).
+
+#### Step 5e: Tree UI — Expand/Collapse, Cursor, Rendering
+
+- Maintain a `Vec<DisplayNode>` derived from `SummaryTree` for rendering.
+- Keybindings: `j`/`k` (move cursor), `Enter`/`l` (expand), `h` (collapse), `1`/`2`/`3` (collapse to level).
+- Collapsed nodes show only their one‑line digest; expanded nodes show the digest plus children indented beneath.
+- See `SUMMARIES_DESIGN.md` §6 for the full interaction model.
+
 
 
 ## Step 6: Pane Content Tracking
@@ -335,6 +379,13 @@ This allows adding handlers for:
 
 ## Step 7: Integrate LLM API
 
+Wire a real LLM backend into the `SummarizationOrchestrator` from Step 5c. The orchestrator already handles leaf generation and rollup scheduling; this step replaces the `NoOpBackend` with an actual LLM call.
+
+Key considerations:
+- Use the **prompt templates** described in `SUMMARIES_DESIGN.md` §4–5 (leaf prompt, rollup prompt).
+- Handle the **`NEED_DETAIL: <id>`** protocol: when the LLM response starts with this marker during a rollup, the orchestrator should provide the child's full body and re‑prompt (up to 2 rounds).
+- The `web_request` call and response handling below are illustrative — adapt to the orchestrator's state machine (`RollupPhase`).
+
 Add web request capability:
 
 ```rust
@@ -342,28 +393,28 @@ impl State {
     fn summarize_recent_events(&mut self) {
         // Get unsummarized events from DB
         let events = self.event_store.get_unsummarized_events();
-        
+
         // Build prompt
         let prompt = format!(
             "Summarize these development activities:\n{}",
             events.join("\n")
         );
-        
+
         // Call LLM API
         let body = serde_json::json!({
             "model": "gpt-4",
             "messages": [{"role": "user", "content": prompt}]
         }).to_string();
-        
+
         let headers = BTreeMap::from([
             ("Content-Type".to_string(), "application/json".to_string()),
             ("Authorization".to_string(), format!("Bearer {}", self.api_key)),
         ]);
-        
+
         let context = BTreeMap::from([
             ("request_type".to_string(), "summarize".to_string()),
         ]);
-        
+
         web_request(
             "https://api.openai.com/v1/chat/completions",
             HttpVerb::Post,
@@ -381,10 +432,10 @@ Event::WebRequestResult(status, headers, body, context) => {
     if context.get("request_type") == Some(&"summarize".to_string()) {
         let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let summary = response["choices"][0]["message"]["content"].as_str().unwrap();
-        
+
         // Store summary
         self.event_store.store_summary(summary);
-        
+
         // Mark events as summarized
         self.event_store.mark_events_summarized();
     }
