@@ -85,12 +85,6 @@ pub enum DiscoveryPhase {
     FindingGitRoot,
     /// Fired `git rev-parse --show-superproject-working-tree`, waiting for result.
     FindingSuperproject,
-    /// Resolving `$XDG_DATA_HOME` (or `$HOME/.local/share`) for the global
-    /// scratchpad directory.
-    ResolvingDataDir {
-        /// Project roots discovered so far (git root, optional superproject).
-        roots: Vec<PathBuf>,
-    },
     /// Fired `mkdir -p` commands, waiting for them to complete.
     CreatingDirs {
         pending: usize,
@@ -116,7 +110,6 @@ impl fmt::Display for DiscoveryPhase {
             Self::AwaitingPermissions => write!(f, "⏳ Awaiting permissions..."),
             Self::FindingGitRoot => write!(f, "🔍 Finding git root..."),
             Self::FindingSuperproject => write!(f, "🔍 Checking for parent repo..."),
-            Self::ResolvingDataDir { .. } => write!(f, "🔍 Resolving data directory..."),
             Self::CreatingDirs { pending, .. } => {
                 write!(f, "📁 Creating directories ({pending} remaining)...")
             }

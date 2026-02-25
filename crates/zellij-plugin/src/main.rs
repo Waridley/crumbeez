@@ -303,6 +303,7 @@ impl ZellijPlugin for State {
             PermissionType::InterceptInput,
             PermissionType::WriteToStdin,
             PermissionType::ReadPaneContents,
+            PermissionType::ReadSessionEnvironmentVariables,
         ];
         #[cfg(not(feature = "pane-content-tracking"))]
         let permissions = vec![
@@ -310,6 +311,7 @@ impl ZellijPlugin for State {
             PermissionType::RunCommands,
             PermissionType::InterceptInput,
             PermissionType::WriteToStdin,
+            PermissionType::ReadSessionEnvironmentVariables,
         ];
         request_permission(&permissions);
 
