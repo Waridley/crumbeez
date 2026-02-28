@@ -2,20 +2,22 @@
 
 This document describes the design for **hierarchical (recursive) summaries** in crumbeez. Rather than producing a flat list of summaries, the system generates short summaries for small groups of events, then summarizes those summaries at higher levels, forming a tree that users can expand and collapse for more or less detail.
 
-This is a companion to `DESIGN.md` (overall architecture) and `DEVELOPMENT_PLAN.md` (implementation guide).
-
 
 ## 1. Concept & Terminology
 
 ### Summary Levels
 
-The hierarchy has **three named levels**, designed so additional levels can be added later:
+The hierarchy can be indexed by level, with level 0 being the leaves and larger numbers summarizing larger stretches of time. For example (specifics subject to change):
 
-| Level | Name | Typical Scope | Trigger | Example |
-|-------|------|---------------|---------|---------|
-| 0 | **Leaf Summary** | A small group of events (5–200 events, one "activity burst") | Pane switch, inactivity timer, command completion, buffer threshold | "Edited `event_log.rs`: added `SummaryNode` struct with 4 fields; ran `cargo check`, 0 errors" |
-| 1 | **Section Summary** | 3–8 leaf summaries covering a coherent work segment | Count threshold (N leaves accumulated) or time threshold (e.g. 30 min) | "Implemented the summary data model: added `SummaryNode` and `SummaryTree` to crumbeez‑lib, updated serialization, wrote 3 unit tests" |
-| 2 | **Session Summary** | All section summaries within a session, or a day's work | Session end, day boundary, or manual trigger | "Full‑day session: refactored summarization pipeline to support hierarchical summaries, integrated LLM backend, fixed 2 bugs in pane tracking" |
+| Level | Example Scope | Trigger | Example |
+|-------|---------------|---------|---------|
+| 0 |  A small group of events (one to a few hundred events at most, one "activity burst") | Pane switch, inactivity timer, command completion, finished typing, etc. | "Edited `event_log.rs`: added `SummaryNode` struct with 4 fields; ran `cargo check`, 0 errors" |
+| 1 |  A few leaf summaries covering a coherent work segment | Count threshold (N leaves accumulated) or time threshold (e.g. 30 min) | "Implemented the summary data model: added `SummaryNode` and `SummaryTree` to crumbeez‑lib, updated serialization, wrote 3 unit tests" |
+| 2 |  The amount of work that would warrant a git commit | `git commit` run or a similar amount of work done | [A summary of a commit message] |
+| 3 |  A pull request made or updated, or similar amount of work | `gh pr create`, PR detected from commited work, or similar amount of work done | [A summary of the PR writeup] |
+| 4 |  All section summaries within a session, or a day's work | Session end, day boundary, or manual trigger | "Full‑day session: refactored summarization pipeline to support hierarchical summaries, integrated LLM backend, fixed 2 bugs in pane tracking" |
+
+*Note:* Users may have different preferences for thresholds. Should be tunable. If LLM-driven grouping described below is used, a user prompt should be configurable. Otherwise some kind of scripting would probably be necessary in order to account for all possible preferences.
 
 ### Key Terms
 
@@ -25,23 +27,20 @@ The hierarchy has **three named levels**, designed so additional levels can be a
 - **Rollup** – The process of combining N child summaries into a parent summary at the next level.
 - **Detail expansion** – An LLM requesting the full text of a child summary (or even raw events) during rollup, when the child's one‑line digest is insufficient.
 
-### Rollup Triggers
+### LLM-Driven Grouping
 
-| Trigger | Creates Level |
-|---------|---------------|
-| Pane switch with activity, inactivity timer, command exit | Level 0 (leaf) |
-| N leaf summaries accumulated (configurable, default 5) OR time window exceeded (configurable, default 30 min) | Level 1 (section) |
-| Session end / day boundary / manual summary command | Level 2 (session) |
-
-### Alternative: LLM-Driven Grouping
-
-Instead of threshold-based triggers, provide the LLM a range of events or smaller summaries and let it decide how to group them:
+Provide the LLM a range of events or smaller summaries and let it decide how to group them:
 
 | Aspect | Threshold-Based (current) | LLM-Driven Grouping |
 |-------|---------------------------|------------------------|
 | **Trigger logic** | Hardcoded thresholds (5 leaves, 30 min) | LLM decides group boundaries based on context |
 | **Pros** | Deterministic, predictable; simple to implement | Handles varied scenarios naturally; leverages LLM's core strength |
 | **Cons** | Brittle for edge cases; requires tuning | Non-deterministic; requires well-formed output; token cost risk |
+
+### Alternative: Hard-coded Rollup Triggers
+
+If LLM's end up struggling with logically delineating summaries or other issues result, we can code summary
+threshold in instead, but configuration becomes much more challenging. A simple "number of levels" config could maybe work, or maybe a scripting language could be included. Either way, making an LLM work would be much simpler.
 
 **Prompt example**:
 ```
@@ -60,6 +59,11 @@ Produce a hierarchical grouping:
    - GROUP_DIGEST: <one-line summary>
    - GROUP_BODY: <2-4 sentences>
    - GROUP_END
+
+If you need any more deetail about a given digest, You can fallibly request it with the following syntax:
+
+**TODO: details tool-call syntax
+
 ```
 
 
@@ -127,71 +131,92 @@ The existing `Summary` struct in `event_log.rs` remains as an internal helper us
 
 ### Principles
 
-- **Append‑only**: each summary node is appended to a log file as it's created.
-- **Human‑readable**: Markdown with YAML front matter per entry.
-- **Machine‑parseable**: YAML front matter contains all metadata to reconstruct the tree.
-- **One file per session**: `.crumbeez/summaries/YYYY-MM-DD_HHMMSS_<session_id>.md`
+- **Human‑readable**: Markdown summaries with understandable filenames and headers.
+- **Machine‑parseable**: File names (and optionally frontmatter or other attributes) contain metadata to reconstruct the tree structure. We may not need any frontmatter at all, but it's there if useful.
+- **Living**: As more events come in, the LLM may need to update recent summaries to reflect a clearer picture of what the user is doing. The last summary at each level can be re-generated to incorporate new context. The user can also edit summaries manually if necessary.
 
-### Format Alternatives
-
-| Format | Pros | Cons |
-|-----------|------|------|
-| **Markdown + YAML frontmatter** (current) | Human‑readable; human‑editable; familiar to developers | Hierarchy reconstruction requires custom parser; frontmatter parsing needed |
-| **HTML** (alternative) | Browser‑viewable; inherent hierarchy via `<ul>/<li>`; collapsible via `<details>` elements | Less human‑editable; requires HTML parser; data attributes for metadata |
-| **Filesystem hierarchy** (alternative) | Zero specialized tooling; `tree`/file managers work; naturally recursive; trivial read/write | Many small files vs one; filesystem overhead; harder to share/transfer |
-
-**HTML example**:
-```html
-<ul>
-  <li><details open><summary>14:00–15:30  Implemented hierarchical summary data model</summary>
-    <p>Full-day session: refactored summarization pipeline...</p>
-    <ul>
-      <li><details><summary>14:00–14:05  Edited event_log.rs</summary>
-        <p>Edited event_log.rs: added SummaryNode struct...</p></li>
-      <li><details><summary>14:05–14:12  Wrote SummaryTree</summary>
-        <p>Wrote SummaryTree implementation...</p></li>
-    </ul>
-  </details>
-</ul>
+### Filesystem hierarchy example:
+```
+.crumbeez/summaries/2026/02/25/    # date format configurable
+├── 14_00-Create 3 PRs in Bevy.md  # The coarsest summary of everything that was done in a session
+└── 17_23-...
 ```
 
-**Filesystem hierarchy example**:
-```
-.crumbeez/summaries/2026-02-25_140000_a1b2c3d4/
-├── session.md          # Level 2 summary (contains metadata + body)
-├── 14-05_section.md   # Level 1 summary
-├── 14-12_section.md
-└── leaves/
-    ├── L0-001.md       # Each leaf is its own file
-    ├── L0-002.md
-    └── L0-003.md
-```
+If a sessions lasts long enough to be unweildy in one file, more folders could be added and the files linked to in the session's markdown headers.
 
-### File Format Example
+##### File example (`.crumbeez/summaries/2026/02/25/14_00-Create 3 PRs in Bevy.md`):
 
 ```markdown
-<!-- crumbeez summary log v2 -->
-<!-- session: a1b2c3d4 -->
+# Created 3 Pull Requests to the Bevy repo
 
----
-id: a1b2c3d4-L0-001
-level: 0
-parent: null
-children: []
-time_start: 2026-02-25T14:00:00Z
-time_end: 2026-02-25T14:05:32Z
-event_count: 47
-digest: "Edited event_log.rs: added SummaryNode struct"
-generation: 1
----
+## 14:00..14:25 Support Schedule Commands [#23145](...)
 
-Edited `event_log.rs`: added `SummaryNode` struct with 4 fields.
-Ran `cargo check` with 0 errors. Also modified `lib.rs` to export the new module.
+Fixes [#23140](...)
+Emulates [#23090](...)
+
+### 14:00..14:19 Edited 2 files
+
+- 14:00 Edited `mod.rs`: Added `schedule_commands` module </summary>
+
+- <details>
+  <summary>
+    14:00 Edited `schedule_commands.rs`: implemented `ScheduleCommands` and `ScheduleCommandsExt`
+  </summary>
+
+    - 14:00:37Z Added `ScheduleCommands` struct
+    - 14:02:42Z Added `ScheduleCommandsExt` trait.
+    - 14:04:21Z Implemented `ScheduleCommandsExt` for `Commands`
+    - ...
+
+</details>
+
+- <details>
+  <summary> 14:15:24Z Edited `schedule_commands.rs`: Added tests </summary>
+
+    - 14:15:24Z Added tests module
+    - 14:15:58Z Implemented `...` test
+    - 14:17:23Z Implemented `...` test
+    - ...
+
+</details>
+
+### 14:19..14:23 Ran tests
+
+- <details>
+  <summary> 14:05:00Z Ran tests. All passed. </summary>
+
+    - 14:05:00 Switch to terminal pane
+    - 14:05:04 Run `cargo test` with 0 errors
+
+</details>
+
+### 14:23..14:25 Created PR
+
+- <details>
+  <summary> committed, pushed to GH, and made PR [#23145](...) </summary>
+
+      - 14:23 `git commit`, edited message in external editor
+      - 14:24 `git push --set-upstream origin`
+      - 14:25 `gh pr create`
+
+</details>
+
+## 14:25..14:52 Deny missing docs for bevy_image [#23160](...)
+
+Removed #![expect(missing_docs)] and added docs
+
+### 14:25..14:27 ...
+
+...
+
 ```
 
-### Parent Back‑patching
+* Note: Some "frontmatter" may be added for metadata useful to the user or renderers, like timespans, session context, etc., but nothing strictly required for technical reasons.
 
-When a leaf gets rolled up, its `parent` in the on‑disk file is **not** updated (append‑only). Instead, the parent's `children` list is authoritative. During deserialization, `SummaryTree::load()` reconstructs `parent_id` on each node by scanning children lists.
+
+### Parent Relationships
+
+Since summaries are living documents that can be updated, parent-child relationships are stored in the parent summary (in its header or frontmatter, or just implicitly via the directory/file structure). During deserialization, `SummaryTree::load()` reads these relationships to reconstruct the tree.
 
 
 ## 4. Summarization Pipeline Changes
@@ -204,7 +229,7 @@ Events accumulate → trigger → generate_leaf_summary() → SummaryTree.add_le
         → if yes: gather child digests → LLM prompt → SummaryTree.rollup_leaves()
             → check should_rollup_sections()
                 → if yes: gather section digests → LLM prompt → SummaryTree.rollup_sections()
-    → append new nodes to summary log file → update UI
+    → update summary files (living documents) → update UI
 ```
 
 ### Orchestrator
@@ -333,7 +358,7 @@ summary.rs (crumbeez-lib) → lib.rs exports → summary_io.rs → summarization
 
 2. **Token budget** — Rollup prompts with many child digests/bodies may exceed context limits for small local models. *Mitigation*: Configurable max children per rollup; if exceeded, split into sub‑rollups.
 
-3. **Append‑only file growth** — Long sessions produce large files. *Mitigation*: Files are sealed at session end; new sessions get new files.
+3. **Large file growth** — Long sessions produce large summary files. *Mitigation*: Break large files into subdirectories using a pattern similar to Rust's `module.rs` + `module/submodule.rs`, linking sub-files in parent files.
 
 4. **WASM constraints** — No direct filesystem access; must use `run_command` with base64 encoding (proven pattern from `EventLogIO`).
 
@@ -348,7 +373,7 @@ summary.rs (crumbeez-lib) → lib.rs exports → summary_io.rs → summarization
 3. **Manual summary trigger** — Add a keybinding (e.g. `Ctrl+Enter` when crumbeez pane focused) for "summarize now"?
 4. **Rollup timing** — Asynchronous (event‑driven via `WebRequestResult` / `RunCommandResult`). UI shows "⏳ Rolling up…" while waiting.
 5. **Rebuild from events** — Leaves can be re‑generated from events, but section/session summaries require LLM re‑generation (may produce different text).
-6. **Configurable level count** — Data model supports arbitrary levels (`level: u8`), but implement only 3 initially. Cross‑session summaries deferred to Phase 5.
+6. **Configurable level count** — Data model supports arbitrary levels (`level: u8`). New levels should move existing ones within themselves.
 
 
 ## 9. Estimated Effort
