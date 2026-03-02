@@ -18,6 +18,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = "0.4"
+base64 = "0.22"
 # The PaneRenderReport API (used by pane-content-tracking) was merged into
 # zellij main after the 0.43.1 release.  This branch points at the post-merge
 # main until a new release is cut, at which point we switch back to a version

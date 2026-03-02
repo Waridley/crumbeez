@@ -1,4 +1,5 @@
 mod event_log;
+pub mod llm;
 mod summary;
 
 use std::collections::VecDeque;
@@ -8,7 +9,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub use event_log::{EventLog, EventLogError, LogEntry, Summary};
-pub use summary::{DisplayNode, SummaryId, SummaryNode};
+pub use llm::{
+    create_backend, BackendError, CrumbeezConfig, GroupRange, LLMBackend, LLMConfig,
+    NoOpSummarizer, OllamaBackend, OpenAIBackend, SummarizationBackend, SummarizationRequest,
+    SummarizationResponse, SummarizationType,
+};
+pub use summary::{DisplayNode, SummaryId, SummaryNode, SummaryTree};
 
 // ── Directory layout constants ───────────────────────────────────
 
