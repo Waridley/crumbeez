@@ -1,7 +1,4 @@
-use crumbeez_lib::{
-    BackendError, GroupRange, LLMBackend, SummarizationRequest, SummarizationResponse,
-    SummarizationType,
-};
+use crumbeez_lib::{BackendError, GroupRange, LLMBackend, SummarizationResponse};
 use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 use zellij_tile::prelude::{web_request, HttpVerb};
@@ -20,9 +17,18 @@ pub struct LLMRequestContext {
     action: LLMRequestAction,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct LLMStats {
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub request_count: u64,
+    pub last_latency_ms: Option<u64>,
+}
+
 pub struct LLMRequestor {
     backend: LLMBackend,
     pending_request: bool,
+    stats: LLMStats,
 }
 
 impl LLMRequestor {
@@ -30,6 +36,7 @@ impl LLMRequestor {
         Self {
             backend,
             pending_request: false,
+            stats: LLMStats::default(),
         }
     }
 
@@ -43,6 +50,10 @@ impl LLMRequestor {
 
     pub fn is_pending(&self) -> bool {
         self.pending_request
+    }
+
+    pub fn stats(&self) -> &LLMStats {
+        &self.stats
     }
 
     pub fn request_leaf_summary(&mut self, events: Vec<String>, event_count: u32) -> bool {
@@ -214,6 +225,16 @@ impl LLMRequestor {
                 return Some(LLMResult::Error(format!("JSON parse error: {}", e)));
             }
         };
+
+        if let (Some(prompt_tokens), Some(gen_tokens)) = (
+            json["prompt_eval_count"].as_u64(),
+            json["eval_count"].as_u64(),
+        ) {
+            self.stats.tokens_in += prompt_tokens;
+            self.stats.tokens_out += gen_tokens;
+            self.stats.request_count += 1;
+            self.stats.last_latency_ms = json["total_duration"].as_u64().map(|ns| ns / 1_000_000);
+        }
 
         let response_text = json["response"]
             .as_str()
