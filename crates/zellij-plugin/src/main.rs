@@ -7,6 +7,7 @@ mod pane_content;
 mod root_discovery;
 mod summary_io;
 
+use console_error_panic_hook;
 use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info};
@@ -402,6 +403,8 @@ impl ZellijPlugin for State {
             .with_writer(std::io::stderr)
             .with_target(false)
             .try_init();
+
+        console_error_panic_hook::set_once();
 
         #[cfg(feature = "pane-content-tracking")]
         let permissions = vec![

@@ -23,5 +23,6 @@ base64 = "0.22"
 # zellij main after the 0.43.1 release.  This branch points at the post-merge
 # main until a new release is cut, at which point we switch back to a version
 # number and fold the feature into the default build.
+console_error_panic_hook = "0.1"
 zellij-tile = { git = "https://github.com/zellij-org/zellij.git", branch = "main" }
 

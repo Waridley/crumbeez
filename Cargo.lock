@@ -301,6 +301,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -377,6 +387,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "chrono",
+ "console_error_panic_hook",
  "crumbeez-lib",
  "serde",
  "serde_json",
@@ -3636,7 +3647,6 @@ dependencies = [
 [[package]]
 name = "zellij-tile"
 version = "0.44.0"
-source = "git+https://github.com/zellij-org/zellij.git?branch=main#b961c1f3d2bb5c7ce722737cc5557dfc39c7cda8"
 dependencies = [
  "clap",
  "prost",
@@ -3650,7 +3660,6 @@ dependencies = [
 [[package]]
 name = "zellij-utils"
 version = "0.44.0"
-source = "git+https://github.com/zellij-org/zellij.git?branch=main#b961c1f3d2bb5c7ce722737cc5557dfc39c7cda8"
 dependencies = [
  "anyhow",
  "backtrace",
