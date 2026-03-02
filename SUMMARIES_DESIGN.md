@@ -7,64 +7,74 @@ This document describes the design for **hierarchical (recursive) summaries** in
 
 ### Summary Levels
 
-The hierarchy can be indexed by level, with level 0 being the leaves and larger numbers summarizing larger stretches of time. For example (specifics subject to change):
+The hierarchy is indexed by level, with level 0 (leaves/actions) at the bottom and higher levels summarizing larger stretches of activity. The exact level boundaries and triggers are intentionally flexible — the LLM decides when to create new summary levels based on the content, not hard thresholds.
 
-| Level | Example Scope | Trigger | Example |
-|-------|---------------|---------|---------|
-| 0 |  A small group of events (one to a few hundred events at most, one "activity burst") | Pane switch, inactivity timer, command completion, finished typing, etc. | "Edited `event_log.rs`: added `SummaryNode` struct with 4 fields; ran `cargo check`, 0 errors" |
-| 1 |  A few leaf summaries covering a coherent work segment | Count threshold (N leaves accumulated) or time threshold (e.g. 30 min) | "Implemented the summary data model: added `SummaryNode` and `SummaryTree` to crumbeez‑lib, updated serialization, wrote 3 unit tests" |
-| 2 |  The amount of work that would warrant a git commit | `git commit` run or a similar amount of work done | [A summary of a commit message] |
-| 3 |  A pull request made or updated, or similar amount of work | `gh pr create`, PR detected from commited work, or similar amount of work done | [A summary of the PR writeup] |
-| 4 |  All section summaries within a session, or a day's work | Session end, day boundary, or manual trigger | "Full‑day session: refactored summarization pipeline to support hierarchical summaries, integrated LLM backend, fixed 2 bugs in pane tracking" |
+*Note:* The table below is a rough illustration of how one user's session might map to levels, not a specification to implement. Different users, workflows, and time scales will produce different groupings.
 
-*Note:* Users may have different preferences for thresholds. Should be tunable. If LLM-driven grouping described below is used, a user prompt should be configurable. Otherwise some kind of scripting would probably be necessary in order to account for all possible preferences.
+| Level | Example Scope |
+|-------|---------------|
+| 0 | Actions — a single command run, a brief editing burst, opening a file. (Technical term: "leaf") |
+| 1 | A few actions forming a logically distinct task |
+| 2 | A larger work segment (e.g., what might warrant a commit) |
+| 3 | A coherent body of work (e.g., a pull request, a feature implementation) |
+| 4 | Session-level or day-level summary |
 
 ### Key Terms
 
+- **Action** – The smallest unit of activity: a single command run, a brief editing burst, opening a file. This is the user-facing term for level 0 summaries. (Technical equivalent: "leaf")
+- **Leaf** – Technical term for a level 0 summary node in the tree structure. Synonymous with "action" from the user's perspective.
 - **SummaryNode** – A single summary at any level, with metadata linking it to its parent and children.
 - **SummaryTree** – The in‑memory representation of the full hierarchy for the current session.
-- **Leaf events** – The raw `LogEntry` items from the `EventLog` that a leaf summary covers.
 - **Rollup** – The process of combining N child summaries into a parent summary at the next level.
 - **Detail expansion** – An LLM requesting the full text of a child summary (or even raw events) during rollup, when the child's one‑line digest is insufficient.
 
 ### LLM-Driven Grouping
 
-Provide the LLM a range of events or smaller summaries and let it decide how to group them:
+The system uses the LLM to determine when to create new summary levels and what boundaries to use. Instead of hard thresholds (e.g., "5 items" or "30 minutes"), the LLM decides based on whether activities form a **logically distinct task**.
 
-| Aspect | Threshold-Based (current) | LLM-Driven Grouping |
-|-------|---------------------------|------------------------|
-| **Trigger logic** | Hardcoded thresholds (5 leaves, 30 min) | LLM decides group boundaries based on context |
-| **Pros** | Deterministic, predictable; simple to implement | Handles varied scenarios naturally; leverages LLM's core strength |
-| **Cons** | Brittle for edge cases; requires tuning | Non-deterministic; requires well-formed output; token cost risk |
+#### What makes tasks "logically distinct"?
 
-### Alternative: Hard-coded Rollup Triggers
+A boundary between tasks exists where a human would say "that was one thing, now I'm on another." Consider:
 
-If LLM's end up struggling with logically delineating summaries or other issues result, we can code summary
-threshold in instead, but configuration becomes much more challenging. A simple "number of levels" config could maybe work, or maybe a scripting language could be included. Either way, making an LLM work would be much simpler.
+- **Context switches**: different files, modules, projects, or goals
+- **Task completion**: a build/test finished, a commit made, a document saved
+- **Semantic shifts**: moved from implementing → debugging → reviewing
+- **Command sequences**: related commands that accomplish one goal (e.g., edit config → reload service → verify)
 
-**Prompt example**:
-```
-You are organizing developer activity into a hierarchy.
-Below are {N} sequential activity summaries from {time_range}.
+The LLM applies these heuristics organically rather than following rigid rules.
 
-Summaries:
-1. <digest_1>
-2. <digest_2>
-...
+#### Safety Maximums
 
-Produce a hierarchical grouping:
-1. GROUP the summaries into logical segments (3-7 per group)
-2. For each GROUP output:
-   - GROUP_START: <number>
-   - GROUP_DIGEST: <one-line summary>
-   - GROUP_BODY: <2-4 sentences>
-   - GROUP_END
+To prevent runaway token usage and ensure responsiveness:
 
-If you need any more deetail about a given digest, You can fallibly request it with the following syntax:
+- Maximum ~50 actions per grouping prompt
+- Maximum ~10 groups per rollup response
 
-**TODO: details tool-call syntax
+These limits are **not** mentioned in the LLM prompt. Instead, if the LLM exceeds these limits, the system detects it and provides feedback:
+
+> "You produced N groups, which is an order of magnitude more than expected. Please reconsider and combine adjacent activities that form a single task."
+
+This feedback mentions "order of magnitude" rather than exact numbers to avoid biasing the LLM toward a specific count.
+
+#### Grouping Prompt Template
 
 ```
+You are grouping terminal activity into logically distinct tasks.
+A "logically distinct" task is where a human would say "that was one thing, now I'm on another."
+
+Group these actions. For each group, output:
+GROUP <start_idx>-<end_idx>: <2-5 word task label>
+
+Example:
+GROUP 0-12: Configure user authentication
+GROUP 13-18: Write unit tests
+GROUP 19-25: Update documentation
+
+Now process these actions:
+{formatted_actions}
+```
+
+The response format is simple (just indices and labels) to minimize parsing complexity. If the LLM needs more detail about any action to make a grouping decision, it can request it using the detail mechanism described below.
 
 
 ## 2. Data Model
@@ -138,8 +148,76 @@ The existing `Summary` struct in `event_log.rs` remains as an internal helper us
 ### Filesystem hierarchy example:
 ```
 .crumbeez/summaries/2026/02/25/    # date format configurable
-├── 14_00-Create 3 PRs in Bevy.md  # The coarsest summary of everything that was done in a session
+├── 14_00-Configure backup system.md  # The coarsest summary of everything that was done in a session
 └── 17_23-...
+```
+
+If a sessions lasts long enough to be unweildy in one file, more folders could be added and the files linked to in the session's markdown headers.
+
+##### File example (`.crumbeez/summaries/2026/02/25/14_00-Configure backup system.md`):
+
+```markdown
+# Configured automated backup system for production servers
+
+## 14:00..14:25 Set up backup scripts
+
+Installed rsync-based backup to remote storage.
+
+### 14:00..14:19 Created backup script
+
+- 14:00 Edited `backup.sh`: Added rsync commands with preserve flags
+
+- <details>
+  <summary>
+    14:00 Edited `backup.sh`: implemented rotation logic
+  </summary>
+
+    - 14:00:37Z Added rotation function
+    - 14:02:42Z Added date-based naming.
+    - 14:04:21Z Implemented retention policy
+    - ...
+
+</details>
+
+- <details>
+  <summary> 14:15:24Z Edited `backup.sh`: Added tests </summary>
+
+    - 14:15:24Z Added test cases for rotation
+    - 14:15:58Z Implemented rsync dry-run test
+    - 14:17:23Z Added error handling tests
+    - ...
+
+</details>
+
+### 14:19..14:23 Tested scripts locally
+
+- <details>
+  <summary> 14:05:00Z Ran backup script. All files copied successfully. </summary>
+
+    - 14:05:00 Switch to terminal pane
+    - 14:05:04 Run `./backup.sh --dry-run` with 0 errors
+
+</details>
+
+### 14:23..14:25 Deployed to cron
+
+- <details>
+  <summary> 14:23 Added backup to crontab </summary>
+
+      - 14:23 `crontab -e`, added daily backup entry
+      - 14:24 `systemctl list-timers` to verify
+      - 14:25 Confirmed timer will run at 02:00
+
+</details>
+
+## 14:25..14:52 Documented restore procedure
+
+Created README with restore instructions.
+
+### 14:25..14:27 ...
+
+...
+
 ```
 
 If a sessions lasts long enough to be unweildy in one file, more folders could be added and the files linked to in the session's markdown headers.
@@ -236,19 +314,19 @@ Events accumulate → trigger → generate_leaf_summary() → SummaryTree.add_le
 
 A new `SummarizationOrchestrator` (in `crates/zellij-plugin/src/summarization.rs`) replaces inline logic in `trigger_summary_for_pane_switch()` and the `Event::Timer` handler:
 
-1. **Leaf generation**: Consumes unconsumed events → `SummaryNode` at level 0.
-2. **Rollup decision**: After each leaf, checks thresholds (5 pending leaves OR 30 min since oldest pending leaf — both configurable).
-3. **Section generation**: Collects child digests, sends to LLM, handles detail expansion.
+1. **Action/leaf generation**: Consumes unconsumed events → `SummaryNode` at level 0.
+2. **Rollup decision**: After each leaf, the orchestrator checks if there are enough pending items to warrant a grouping prompt (safety limits). If so, it sends the pending items to the LLM for grouping.
+3. **Section generation**: Collects child digests, sends to LLM for rollup, handles detail expansion.
 4. **Session generation**: Same pattern over pending sections.
 
 The orchestrator is modeled as a state machine (like `RootDiscovery`) to handle async LLM round‑trips, tracking a `RollupPhase` enum.
 
 ### LLM Prompt Templates
 
-**Leaf prompt** (level 0):
+**Action/leaf prompt** (level 0):
 ```
-You are summarizing a developer's recent activity in a terminal session.
-Events: {events_formatted}
+You are summarizing a user's recent terminal activity.
+Actions: {events_formatted}
 Produce:
 1. DIGEST (max 80 chars): the essence of what happened.
 2. BODY (2-5 sentences, Markdown): files touched, commands run, outcomes.
@@ -257,10 +335,10 @@ Format: DIGEST: <text>\nBODY:\n<markdown>
 
 **Section prompt** (level 1):
 ```
-You are creating a higher-level summary of a work segment. Below are digests:
+You are creating a higher-level summary of a work segment. Below are digests of logically distinct tasks:
 {child_digests_numbered}
 Produce DIGEST (max 100 chars) and BODY (3-8 sentences).
-If any digest is too vague, respond with: NEED_DETAIL: <number>
+If any digest is too vague to summarize confidently, respond with: NEED_DETAIL: <number>
 ```
 
 **Session prompt** (level 2): Same structure as section, scoped to full session.
@@ -286,12 +364,12 @@ Never requests detail. Concatenates child digests as a bullet list for the secti
 
 ```
 ┌─ crumbeez — session summary ─────────────────────────────────┐
-│ ▼ 14:00–15:30  Implemented hierarchical summary data model    │
-│   ▼ 14:00–14:05  Edited event_log.rs: added SummaryNode      │
-│     Edited `event_log.rs`: added `SummaryNode` struct...      │
-│   ► 14:05–14:12  Wrote SummaryTree implementation             │
-│   ► 14:12–14:20  Updated serialization format                 │
-│ ► 15:30–16:15  Fixed pane content tracking bugs               │
+│ ▼ 14:00–15:30  Configured automated backup system              │
+│   ▼ 14:00–14:05  Created backup script with rotation           │
+│     Created backup.sh with rsync commands...                   │
+│   ► 14:05–14:12  Tested scripts locally                         │
+│   ► 14:12–14:20  Documented restore procedure                   │
+│ ► 15:30–16:15  Set up monitoring for backup jobs               │
 │ [j/k] navigate  [Enter/l] expand  [h] collapse               │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -338,7 +416,7 @@ Indentation: 2 spaces per depth level.
 
 | File | Changes |
 |------|---------|
-| `crates/crumbeez-lib/src/lib.rs` | Add `mod summary;` + `pub use summary::*;`. Add rollup threshold constants. |
+| `crates/crumbeez-lib/src/lib.rs` | Add `mod summary;` + `pub use summary::*;`. Add safety limit constants (max groups, max items per prompt). |
 | `crates/crumbeez-lib/src/event_log.rs` | `Summary` struct stays as internal NoOp helper. No structural changes. |
 | `crates/zellij-plugin/src/main.rs` | (1) Add `summary_tree: SummaryTree`, `summary_io: SummaryIO` to `State`. (2) Replace `pending_summaries: Vec<String>` with tree. (3) Add `expanded_nodes: HashMap<SummaryId, bool>`, `cursor_position: usize`. (4) Refactor `trigger_summary_for_pane_switch()` to call orchestrator. (5) Refactor `Event::Timer` handler. (6) Rewrite `render()` for tree display. (7) Add key handling for tree navigation. |
 | `crates/zellij-plugin/src/event_log_io.rs` | `generate_summary()` becomes a helper called by the NoOp path; no longer the entry point. |
@@ -354,17 +432,19 @@ summary.rs (crumbeez-lib) → lib.rs exports → summary_io.rs → summarization
 
 ### Risks
 
-1. **Prompt engineering fragility** — The `NEED_DETAIL: <number>` protocol depends on LLM compliance. *Mitigation*: Parse leniently (regex), treat malformed responses as "no detail needed." Test with multiple models.
+1. **LLM grouping inconsistency** — The LLM may produce unexpected or inconsistent grouping boundaries between runs. *Mitigation*: Provide clear criteria in prompts, use few-shot examples, log outputs. for debugging Consider allowing users to manually adjust boundaries.
 
-2. **Token budget** — Rollup prompts with many child digests/bodies may exceed context limits for small local models. *Mitigation*: Configurable max children per rollup; if exceeded, split into sub‑rollups.
+2. **Prompt engineering fragility** — The `NEED_DETAIL: <number>` protocol depends on LLM compliance. *Mitigation*: Parse leniently (regex), treat malformed responses as "no detail needed." Test with multiple models.
 
-3. **Large file growth** — Long sessions produce large summary files. *Mitigation*: Break large files into subdirectories using a pattern similar to Rust's `module.rs` + `module/submodule.rs`, linking sub-files in parent files.
+3. **Token budget** — Rollup prompts with many child digests/bodies may exceed context limits for small local models. *Mitigation*: Safety limits on max items per prompt; if exceeded, split into sub‑rollups.
 
-4. **WASM constraints** — No direct filesystem access; must use `run_command` with base64 encoding (proven pattern from `EventLogIO`).
+4. **Large file growth** — Long sessions produce large summary files. *Mitigation*: Break large files into subdirectories using a pattern similar to Rust's `module.rs` + `module/submodule.rs`, linking sub-files in parent files.
 
-5. **Async LLM calls** — Rollup may need multiple round‑trips. Must model as state machine (like `RootDiscovery`). *Mitigation*: Orchestrator tracks a `RollupPhase` enum.
+5. **WASM constraints** — No direct filesystem access; must use `run_command` with base64 encoding (proven pattern from `EventLogIO`).
 
-6. **UI complexity** — Tree navigation in a terminal is nontrivial. *Mitigation*: Start with simple j/k/Enter/h; defer smooth scrolling to later.
+6. **Async LLM calls** — Rollup may need multiple round‑trips. Must model as state machine (like `RootDiscovery`). *Mitigation*: Orchestrator tracks a `RollupPhase` enum.
+
+7. **UI complexity** — Tree navigation in a terminal is nontrivial. *Mitigation*: Start with simple j/k/Enter/h; defer smooth scrolling to later.
 
 ### Open Questions
 
