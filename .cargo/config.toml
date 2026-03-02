@@ -7,3 +7,7 @@ check-native = "check --target x86_64-unknown-linux-gnu"
 test-native = "test --target x86_64-unknown-linux-gnu"
 run-ollama-test = "run --target x86_64-unknown-linux-gnu --example test_ollama --features llm-http"
 
+[patch."https://github.com/zellij-org/zellij.git"]
+zellij-tile = { path = "/home/kevin/tools/zellij/zellij-tile" }
+zellij-utils = { path = "/home/kevin/tools/zellij/zellij-utils" }
+
