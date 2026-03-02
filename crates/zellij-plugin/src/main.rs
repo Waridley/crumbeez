@@ -3,6 +3,7 @@ mod keystroke;
 #[cfg(feature = "pane-content-tracking")]
 mod pane_content;
 mod root_discovery;
+mod summary_io;
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,7 +15,8 @@ use crumbeez_lib::{
 };
 use event_log_io::EventLogIO;
 use keystroke::{classify, key_to_bytes};
-use root_discovery::RootDiscovery;
+use root_discovery::{to_wasi_host_path, RootDiscovery};
+use summary_io::SummaryIO;
 
 #[derive(Default)]
 struct State {
@@ -26,6 +28,7 @@ struct State {
     tab_names: HashMap<usize, String>,
     event_log: EventLog,
     event_log_io: EventLogIO,
+    summary_io: SummaryIO,
     pending_summaries: Vec<String>,
     live_text: Option<String>,
     live_cursor: usize,
@@ -164,14 +167,19 @@ impl State {
             phase = ?self.discovery.phase,
             "handle_discovery_ready called"
         );
-        if let crumbeez_lib::DiscoveryPhase::Ready {
-            ref scratch_dir, ..
-        } = self.discovery.phase
-        {
-            let log_path = scratch_dir.join(crumbeez_lib::EVENT_LOG_FILE);
-            debug!(path = ?log_path, "Log path");
-            self.event_log_io.set_log_path(log_path);
-            self.event_log_io.load(self.discovery.initial_cwd.clone());
+        if let crumbeez_lib::DiscoveryPhase::Ready { ref project_dirs } = self.discovery.phase {
+            self.event_log_io.load_into(&mut self.event_log);
+
+            if let Some(project_dir) = project_dirs.first() {
+                // Translate the host-absolute project dir to its WASI /host path.
+                let wasi_summaries = to_wasi_host_path(
+                    &self.discovery.initial_cwd,
+                    &project_dir.join(crumbeez_lib::SUMMARIES_SUBDIR),
+                );
+                info!(path = ?wasi_summaries, "Summary IO initialized");
+                self.summary_io.set_summaries_dir(wasi_summaries);
+            }
+
             self.reset_inactivity_timer();
         }
     }
@@ -274,14 +282,14 @@ impl State {
                 "Pane switch trigger, summarizing events"
             );
             if let Some(summary) = event_log_io::generate_summary(&mut self.event_log) {
-                self.pending_summaries.push(summary);
+                self.pending_summaries.push(summary.clone());
                 if self.pending_summaries.len() > 10 {
                     self.pending_summaries.remove(0);
                 }
+                self.summary_io.save_summary_text(summary);
             }
             if let Ok(data) = self.event_log.serialize() {
-                self.event_log_io
-                    .save(self.discovery.initial_cwd.clone(), data);
+                self.event_log_io.save(data);
             } else {
                 error!("Failed to serialize event log");
             }
@@ -301,6 +309,7 @@ impl ZellijPlugin for State {
             PermissionType::ReadApplicationState,
             PermissionType::RunCommands,
             PermissionType::InterceptInput,
+            PermissionType::FullHdAccess,
             PermissionType::WriteToStdin,
             PermissionType::ReadPaneContents,
             PermissionType::ReadSessionEnvironmentVariables,
@@ -310,6 +319,7 @@ impl ZellijPlugin for State {
             PermissionType::ReadApplicationState,
             PermissionType::RunCommands,
             PermissionType::InterceptInput,
+            PermissionType::FullHdAccess,
             PermissionType::WriteToStdin,
             PermissionType::ReadSessionEnvironmentVariables,
         ];
@@ -358,27 +368,18 @@ impl ZellijPlugin for State {
                 true
             }
             Event::RunCommandResult(exit_code, stdout, stderr, context) => {
-                if self.event_log_io.handle_result(
-                    &context,
-                    &stdout,
-                    exit_code,
-                    &mut self.event_log,
-                ) {
-                    return true;
-                }
-                let was_creating = matches!(
+                let was_ready_before = matches!(
                     self.discovery.phase,
-                    crumbeez_lib::DiscoveryPhase::CreatingDirs { .. }
+                    crumbeez_lib::DiscoveryPhase::Ready { .. }
                 );
                 let handled = self
                     .discovery
                     .handle_command_result(exit_code, &stdout, &stderr, &context);
-                if was_creating
-                    && matches!(
-                        self.discovery.phase,
-                        crumbeez_lib::DiscoveryPhase::Ready { .. }
-                    )
-                {
+                let is_ready_now = matches!(
+                    self.discovery.phase,
+                    crumbeez_lib::DiscoveryPhase::Ready { .. }
+                );
+                if !was_ready_before && is_ready_now {
                     self.handle_discovery_ready();
                 }
                 handled
@@ -442,14 +443,14 @@ impl ZellijPlugin for State {
                     let unconsumed = self.event_log.unconsumed_count();
                     if unconsumed > 0 {
                         if let Some(summary) = event_log_io::generate_summary(&mut self.event_log) {
-                            self.pending_summaries.push(summary);
+                            self.pending_summaries.push(summary.clone());
                             if self.pending_summaries.len() > 10 {
                                 self.pending_summaries.remove(0);
                             }
+                            self.summary_io.save_summary_text(summary);
                         }
                         if let Ok(data) = self.event_log.serialize() {
-                            self.event_log_io
-                                .save(self.discovery.initial_cwd.clone(), data);
+                            self.event_log_io.save(data);
                         } else {
                             error!("Failed to serialize event log");
                         }

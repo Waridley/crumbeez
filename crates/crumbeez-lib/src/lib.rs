@@ -1,4 +1,5 @@
 mod event_log;
+mod summary;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -7,24 +8,21 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub use event_log::{EventLog, EventLogError, LogEntry, Summary};
+pub use summary::{DisplayNode, SummaryId, SummaryNode};
 
 // ── Directory layout constants ───────────────────────────────────
 
 /// Name of the crumbeez data directory created at each project root.
 pub const CRUMBEEZ_DIR_NAME: &str = ".crumbeez";
 
-/// Subdirectory for temporary data (event log, etc.) stored in the global data
-/// directory rather than inside the project repository.
-pub const SCRATCH_DIR: &str = "scratchpad";
-
 /// Subdirectory for human-readable summary logs (Markdown), stored in-repo.
 pub const SUMMARIES_SUBDIR: &str = "summaries";
 
-/// Event log file name (stored in the global scratchpad directory).
+/// Event log file name.
+///
+/// In the WASM plugin this is written to `/data/events.bin`, which the WASI
+/// runtime maps to the plugin's own per-session cache directory.
 pub const EVENT_LOG_FILE: &str = "events.bin";
-
-/// Application name used as the top-level directory under `$XDG_DATA_HOME`.
-pub const APP_DATA_DIR_NAME: &str = "crumbeez";
 
 // ── Directory layout helpers ─────────────────────────────────────
 
@@ -41,36 +39,6 @@ pub fn summaries_dir(root: &Path) -> PathBuf {
 /// Returns all in-repo directories that must exist for a given project root.
 pub fn required_project_dirs(root: &Path) -> Vec<PathBuf> {
     vec![summaries_dir(root)]
-}
-
-/// Compute a stable, human-readable slug for a project root path.
-///
-/// Format: `<dirname>-<8-hex-blake3>` where the hash is over the full
-/// canonical path bytes.  Example: `crumbeez-a1b2c3d4`.
-pub fn data_dir_slug(root: &Path) -> String {
-    let dir_name = root
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_else(|| root.to_string_lossy());
-    let hash = blake3::hash(root.to_string_lossy().as_bytes());
-    let hex = hash.to_hex();
-    // Take first 8 hex chars for a short but collision-resistant suffix.
-    format!("{}-{}", dir_name, &hex[..8])
-}
-
-/// Returns the global scratchpad directory for a project.
-///
-/// Layout: `<data_home>/crumbeez/<slug>/scratchpad/`
-pub fn global_scratch_dir(data_home: &Path, root: &Path) -> PathBuf {
-    data_home
-        .join(APP_DATA_DIR_NAME)
-        .join(data_dir_slug(root))
-        .join(SCRATCH_DIR)
-}
-
-/// Returns the event log file path within the global scratchpad.
-pub fn event_log_path(data_home: &Path, root: &Path) -> PathBuf {
-    global_scratch_dir(data_home, root).join(EVENT_LOG_FILE)
 }
 
 // ── Discovery phase ──────────────────────────────────────────────
@@ -90,15 +58,11 @@ pub enum DiscoveryPhase {
         pending: usize,
         /// In-repo `.crumbeez` directories (one per project root).
         project_dirs: Vec<PathBuf>,
-        /// Global scratchpad directory for the primary project root.
-        scratch_dir: PathBuf,
     },
     /// All directories have been created and are ready.
     Ready {
         /// In-repo `.crumbeez` directories (for summaries, etc.).
         project_dirs: Vec<PathBuf>,
-        /// Global scratchpad directory for the primary project root.
-        scratch_dir: PathBuf,
     },
     /// Discovery failed with an error message.
     Failed(String),
@@ -113,17 +77,9 @@ impl fmt::Display for DiscoveryPhase {
             Self::CreatingDirs { pending, .. } => {
                 write!(f, "📁 Creating directories ({pending} remaining)...")
             }
-            Self::Ready {
-                project_dirs,
-                scratch_dir,
-            } => {
+            Self::Ready { project_dirs } => {
                 let dirs: Vec<_> = project_dirs.iter().map(|d| d.to_string_lossy()).collect();
-                write!(
-                    f,
-                    "✅ Ready — projects: {}, scratch: {}",
-                    dirs.join(", "),
-                    scratch_dir.display()
-                )
+                write!(f, "✅ Ready — projects: {}", dirs.join(", "))
             }
             Self::Failed(msg) => write!(f, "❌ Failed: {msg}"),
         }
