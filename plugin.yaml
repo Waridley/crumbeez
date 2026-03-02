@@ -9,6 +9,8 @@ permissions:
   - ReadApplicationState
   - RunCommands
   - InterceptInput
+  - FullHdAccess
   - WriteToStdin
   - WebAccess
+  - PaneRenderReport
 

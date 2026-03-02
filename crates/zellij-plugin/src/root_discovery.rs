@@ -1,11 +1,15 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use zellij_tile::prelude::*;
 
 pub use crumbeez_lib::DiscoveryPhase;
+
+/// The WASI guest path under which the plugin's host CWD is mounted.
+pub const WASI_HOST_MOUNT: &str = "/host";
 
 /// Context key used to tag run_command requests for root discovery.
 const CTX_PURPOSE: &str = "crumbeez_purpose";
@@ -15,7 +19,6 @@ const CTX_PURPOSE: &str = "crumbeez_purpose";
 enum CommandPurpose {
     GitToplevel,
     GitSuperproject,
-    MkdirCrumbeez,
 }
 
 /// Build a context map tagged with the given purpose.
@@ -26,6 +29,22 @@ fn purpose_context(purpose: CommandPurpose) -> BTreeMap<String, String> {
         serde_json::to_string(&purpose).expect("CommandPurpose serialization is infallible"),
     );
     ctx
+}
+
+/// Translate a host-absolute path rooted under `host_cwd` into a WASI guest
+/// path rooted at `/host`.
+///
+/// Example: if `host_cwd` is `/home/user/proj` and `host_path` is
+/// `/home/user/proj/.crumbeez/summaries`, the result is
+/// `/host/.crumbeez/summaries`.
+///
+/// Falls back to the original path if it doesn't start with `host_cwd`.
+pub fn to_wasi_host_path(host_cwd: &PathBuf, host_path: &PathBuf) -> PathBuf {
+    if let Ok(rel) = host_path.strip_prefix(host_cwd) {
+        PathBuf::from(WASI_HOST_MOUNT).join(rel)
+    } else {
+        host_path.clone()
+    }
 }
 
 /// State for the root discovery process.
@@ -49,7 +68,7 @@ impl RootDiscovery {
         self.phase = DiscoveryPhase::FindingGitRoot;
 
         run_command_with_env_variables_and_cwd(
-            &["git", "rev-parse", "--show-toplevel"],
+            &["sh", "-c", "git rev-parse --show-toplevel 2>/dev/null"],
             BTreeMap::new(),
             initial_cwd,
             purpose_context(CommandPurpose::GitToplevel),
@@ -70,7 +89,7 @@ impl RootDiscovery {
                 Ok(p) => p,
                 Err(_) => return false,
             },
-            None => return false, // Not our command
+            None => return false,
         };
 
         match purpose {
@@ -78,7 +97,6 @@ impl RootDiscovery {
             CommandPurpose::GitSuperproject => {
                 self.handle_git_superproject(exit_code, stdout, stderr)
             }
-            CommandPurpose::MkdirCrumbeez => self.handle_mkdir_result(exit_code, stderr),
         }
     }
 
@@ -95,9 +113,12 @@ impl RootDiscovery {
                 self.git_root = Some(root_path.clone());
                 self.phase = DiscoveryPhase::FindingSuperproject;
 
-                // Check if this is a submodule
                 run_command_with_env_variables_and_cwd(
-                    &["git", "rev-parse", "--show-superproject-working-tree"],
+                    &[
+                        "sh",
+                        "-c",
+                        "git rev-parse --show-superproject-working-tree 2>/dev/null",
+                    ],
                     BTreeMap::new(),
                     root_path,
                     purpose_context(CommandPurpose::GitSuperproject),
@@ -106,12 +127,11 @@ impl RootDiscovery {
             }
         }
 
-        // Not a git repo — use initial_cwd as root
         debug!(
             path = ?self.initial_cwd,
             "Not a git repo, using initial_cwd"
         );
-        self.resolve_data_dir(vec![self.initial_cwd.clone()]);
+        self.create_dirs(vec![self.initial_cwd.clone()]);
         true
     }
 
@@ -123,12 +143,10 @@ impl RootDiscovery {
     ) -> bool {
         let mut roots = vec![];
 
-        // Always include the git root itself
         if let Some(ref git_root) = self.git_root {
             roots.push(git_root.clone());
         }
 
-        // If superproject found, also include it
         if exit_code == Some(0) {
             let superproject = String::from_utf8_lossy(stdout).trim().to_string();
             if !superproject.is_empty() {
@@ -142,100 +160,46 @@ impl RootDiscovery {
             }
         }
 
-        self.resolve_data_dir(roots);
+        self.create_dirs(roots);
         true
     }
 
-    fn resolve_data_dir(&mut self, roots: Vec<PathBuf>) {
-        let env = get_session_environment_variables();
-        let data_home = env
-            .get("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                env.get("HOME")
-                    .map(|h| PathBuf::from(h).join(".local/share"))
-                    .unwrap_or_else(|| PathBuf::from("/tmp/crumbeez"))
-            });
-
-        if !data_home.is_absolute() {
-            self.phase = DiscoveryPhase::Failed(
-                "Could not resolve data home directory: not an absolute path".to_string(),
-            );
-            return;
-        }
-
-        info!(data_home = ?data_home, "Resolved data home");
-        self.create_dirs(roots, data_home);
-    }
-
-    fn handle_mkdir_result(&mut self, exit_code: Option<i32>, stderr: &[u8]) -> bool {
-        if let DiscoveryPhase::CreatingDirs {
-            ref mut pending,
-            ref project_dirs,
-            ref scratch_dir,
-        } = self.phase
-        {
-            if exit_code != Some(0) {
-                let err = String::from_utf8_lossy(stderr);
-                error!(%err, "mkdir failed");
-            }
-
-            *pending = pending.saturating_sub(1);
-            if *pending == 0 {
-                info!(?project_dirs, ?scratch_dir, "Root discovery complete");
-                let project_dirs = project_dirs.clone();
-                let scratch_dir = scratch_dir.clone();
-                self.phase = DiscoveryPhase::Ready {
-                    project_dirs,
-                    scratch_dir,
-                };
-            }
-        }
-        true
-    }
-
-    fn create_dirs(&mut self, roots: Vec<PathBuf>, data_home: PathBuf) {
+    /// Create all required in-repo directories via WASI `/host` paths, then
+    /// transition to `Ready`.
+    fn create_dirs(&mut self, roots: Vec<PathBuf>) {
+        // Collect the host-absolute project dirs (.crumbeez/...) for each root.
+        // These are the canonical paths stored in the phase for use by callers
+        // that need to know the host layout (e.g. for display purposes).
         let project_dirs: Vec<PathBuf> = roots
             .iter()
             .map(|r| crumbeez_lib::crumbeez_dir(r))
             .collect();
 
-        // The primary root is the first one (git root or initial_cwd).
-        let primary_root = &roots[0];
-        let scratch_dir = crumbeez_lib::global_scratch_dir(&data_home, primary_root);
-
-        // Collect all directories that need to be created:
-        // - In-repo summaries dirs for each project root
-        // - Global scratchpad dir for the primary root
-        let mut all_dirs: Vec<String> = Vec::new();
+        // For std::fs calls inside WASI we must use the /host-prefixed paths.
+        // The plugin CWD (initial_cwd) is mounted at /host, so we translate
+        // each directory by stripping the initial_cwd prefix and prepending /host.
+        let mut created_count = 0;
         for root in &roots {
-            for dir in crumbeez_lib::required_project_dirs(root) {
-                all_dirs.push(dir.to_string_lossy().into_owned());
+            for host_dir in crumbeez_lib::required_project_dirs(root) {
+                let wasi_dir = to_wasi_host_path(&self.initial_cwd, &host_dir);
+                match fs::create_dir_all(&wasi_dir) {
+                    Ok(_) => {
+                        info!(path = ?wasi_dir, "Created directory");
+                        created_count += 1;
+                    }
+                    Err(e) => {
+                        debug!(?e, path = ?wasi_dir, "Failed to create directory");
+                    }
+                }
             }
         }
-        all_dirs.push(scratch_dir.to_string_lossy().into_owned());
 
-        let dir_strs: Vec<&str> = all_dirs.iter().map(|s| s.as_str()).collect();
-        let mut cmd: Vec<&str> = vec!["mkdir", "-p"];
-        cmd.extend_from_slice(&dir_strs);
-
-        run_command_with_env_variables_and_cwd(
-            &cmd,
-            BTreeMap::new(),
-            self.initial_cwd.clone(),
-            purpose_context(CommandPurpose::MkdirCrumbeez),
-        );
-
-        debug!(
+        info!(
             ?project_dirs,
-            ?scratch_dir,
-            "Creating project and scratchpad dirs"
+            created = created_count,
+            "Root discovery complete"
         );
 
-        self.phase = DiscoveryPhase::CreatingDirs {
-            pending: 1, // Single mkdir -p command for all dirs
-            project_dirs,
-            scratch_dir,
-        };
+        self.phase = DiscoveryPhase::Ready { project_dirs };
     }
 }

@@ -1,33 +1,18 @@
-use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
-use zellij_tile::prelude::*;
 
 use crumbeez_lib::{EventLog, Summary};
 
-const CTX_PURPOSE: &str = "crumbeez_event_log_purpose";
+/// Path to the event log file inside the WASI sandbox.
+///
+/// The WASI runtime mounts the plugin's own per-session cache directory at
+/// `/data`, so this resolves to `~/.cache/zellij/<session>/.../events.bin`
+/// on the host — writable by std::fs without any special tricks.
+const WASI_EVENT_LOG_PATH: &str = "/data/events.bin";
 
-#[derive(Debug, Serialize, Deserialize)]
-enum EventLogCommand {
-    ReadEventLog,
-    WriteEventLog,
-}
-
-fn purpose_context(purpose: EventLogCommand) -> BTreeMap<String, String> {
-    let mut ctx = BTreeMap::new();
-    ctx.insert(
-        CTX_PURPOSE.to_string(),
-        serde_json::to_string(&purpose).expect("EventLogCommand serialization is infallible"),
-    );
-    ctx
-}
-
-pub struct EventLogIO {
-    log_path: Option<PathBuf>,
-    pending_write: Option<Vec<u8>>,
-}
+pub struct EventLogIO;
 
 impl Default for EventLogIO {
     fn default() -> Self {
@@ -37,157 +22,48 @@ impl Default for EventLogIO {
 
 impl EventLogIO {
     pub fn new() -> Self {
-        Self {
-            log_path: None,
-            pending_write: None,
-        }
+        Self
     }
 
-    pub fn set_log_path(&mut self, path: PathBuf) {
-        debug!(path = ?path, "Event log path set");
-        self.log_path = Some(path);
-    }
+    pub fn load_into(&mut self, event_log: &mut EventLog) {
+        let path = PathBuf::from(WASI_EVENT_LOG_PATH);
+        info!(path = ?path, "Loading event log");
 
-    pub fn load(&mut self, cwd: PathBuf) {
-        let Some(log_path) = &self.log_path else {
-            error!("No log path set for load");
-            return;
-        };
-        let path_str = log_path.to_string_lossy().into_owned();
-        debug!(path = %path_str, "Loading event log");
-        let base64_cmd = format!("if [ -f '{}' ]; then base64 '{}'; fi", path_str, path_str);
-        run_command_with_env_variables_and_cwd(
-            &["sh", "-c", &base64_cmd],
-            BTreeMap::new(),
-            cwd,
-            purpose_context(EventLogCommand::ReadEventLog),
-        );
-    }
-
-    pub fn save(&mut self, cwd: PathBuf, data: Vec<u8>) {
-        let Some(log_path) = &self.log_path else {
-            error!("No log path set for save");
-            return;
-        };
-        let path_str = log_path.to_string_lossy().into_owned();
-        let b64 = base64_encode(&data);
-        info!(
-            bytes = data.len(),
-            b64_len = b64.len(),
-            path = %path_str,
-            "Saving event log"
-        );
-        let cmd = format!("printf '%s' '{}' | base64 -d > '{}'", b64, path_str);
-        self.pending_write = Some(data);
-        run_command_with_env_variables_and_cwd(
-            &["sh", "-c", &cmd],
-            BTreeMap::new(),
-            cwd,
-            purpose_context(EventLogCommand::WriteEventLog),
-        );
-    }
-
-    pub fn handle_result(
-        &mut self,
-        context: &BTreeMap<String, String>,
-        stdout: &[u8],
-        exit_code: Option<i32>,
-        event_log: &mut EventLog,
-    ) -> bool {
-        let purpose: EventLogCommand = match context.get(CTX_PURPOSE) {
-            Some(s) => match serde_json::from_str(s) {
-                Ok(p) => p,
-                Err(_) => return false,
-            },
-            None => return false,
-        };
-
-        match purpose {
-            EventLogCommand::ReadEventLog => {
-                debug!(?exit_code, "ReadEventLog result");
-                if exit_code == Some(0) && !stdout.is_empty() {
-                    let b64_str = String::from_utf8_lossy(stdout);
-                    if let Some(decoded) = base64_decode(&b64_str) {
-                        if let Ok(loaded_log) = EventLog::deserialize(&decoded) {
-                            info!(count = loaded_log.total_count(), "Loaded events from disk");
-                            *event_log = loaded_log;
-                        } else {
-                            error!("Failed to deserialize event log");
-                        }
-                    } else {
-                        error!("Failed to decode base64");
+        match fs::read(&path) {
+            Ok(data) => {
+                info!(bytes = data.len(), "Read event log file");
+                match EventLog::deserialize(&data) {
+                    Ok(loaded) => {
+                        info!(count = loaded.total_count(), "Loaded events from disk");
+                        *event_log = loaded;
+                    }
+                    Err(e) => {
+                        error!(?e, "Failed to deserialize event log");
                     }
                 }
-                true
             }
-            EventLogCommand::WriteEventLog => {
-                debug!(?exit_code, "WriteEventLog result");
-                self.pending_write = None;
-                true
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                info!("No existing event log found, starting fresh");
+            }
+            Err(e) => {
+                error!(?e, path = ?path, "Failed to read event log");
             }
         }
     }
-}
 
-fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::new();
-    let mut padding = 0;
+    pub fn save(&mut self, data: Vec<u8>) {
+        let path = PathBuf::from(WASI_EVENT_LOG_PATH);
+        info!(bytes = data.len(), path = ?path, "Saving event log");
 
-    for chunk in data.chunks(3) {
-        let mut n = 0u32;
-        for (i, &byte) in chunk.iter().enumerate() {
-            n |= (byte as u32) << (16 - i * 8);
-        }
-        padding = 3 - chunk.len();
-        for i in 0..(4 - padding) {
-            let idx = ((n >> (18 - i * 6)) & 0x3F) as usize;
-            result.push(ALPHABET[idx] as char);
+        match fs::write(&path, &data) {
+            Ok(_) => {
+                debug!(bytes = data.len(), "Event log saved successfully");
+            }
+            Err(e) => {
+                error!(?e, path = ?path, "Failed to write event log");
+            }
         }
     }
-
-    for _ in 0..padding {
-        result.push('=');
-    }
-
-    result
-}
-
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    const DECODE_TABLE: [i8; 128] = [
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1,
-        -1, 63, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 3, 4,
-        5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1,
-        -1, -1, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
-        46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
-    ];
-
-    let s = s.trim();
-    let s = s.trim_end_matches('=');
-
-    let mut result = Vec::with_capacity(s.len() * 3 / 4);
-    let mut buffer = 0u32;
-    let mut bits = 0;
-
-    for c in s.chars() {
-        let val = if (c as usize) < 128 {
-            DECODE_TABLE[c as usize]
-        } else {
-            -1
-        };
-        if val < 0 {
-            continue;
-        }
-        buffer = (buffer << 6) | (val as u32);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            result.push((buffer >> bits) as u8);
-        }
-    }
-
-    Some(result)
 }
 
 pub fn generate_summary(event_log: &mut EventLog) -> Option<String> {
