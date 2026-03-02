@@ -3,13 +3,8 @@ use std::path::PathBuf;
 
 use tracing::{debug, error, info};
 
-use crumbeez_lib::{EventLog, Summary};
+use crumbeez_lib::{EventLog, LogEntry, Summary};
 
-/// Path to the event log file inside the WASI sandbox.
-///
-/// The WASI runtime mounts the plugin's own per-session cache directory at
-/// `/data`, so this resolves to `~/.cache/zellij/<session>/.../events.bin`
-/// on the host — writable by std::fs without any special tricks.
 const WASI_EVENT_LOG_PATH: &str = "/data/events.bin";
 
 pub struct EventLogIO;
@@ -82,4 +77,18 @@ pub fn generate_summary(event_log: &mut EventLog) -> Option<String> {
     }
 
     Some(lines.join("\n"))
+}
+
+pub fn extract_events_for_llm(event_log: &mut EventLog) -> Option<(Vec<String>, u32)> {
+    let unconsumed: Vec<LogEntry> = event_log.unconsumed().cloned().collect();
+    if unconsumed.is_empty() {
+        return None;
+    }
+
+    let count = unconsumed.len() as u32;
+    event_log.consume(count as usize);
+
+    let events: Vec<String> = unconsumed.iter().map(|e| e.event.to_string()).collect();
+
+    Some((events, count))
 }

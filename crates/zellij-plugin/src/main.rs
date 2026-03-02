@@ -1,5 +1,7 @@
+mod config_io;
 mod event_log_io;
 mod keystroke;
+mod llm_io;
 #[cfg(feature = "pane-content-tracking")]
 mod pane_content;
 mod root_discovery;
@@ -9,12 +11,16 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info};
 use zellij_tile::prelude::*;
+use zellij_tile::prelude::{BareKey, KeyWithModifier};
 
+use config_io::ConfigIO;
 use crumbeez_lib::{
-    EditControlEvent, EventLog, KeystrokeActivity, KeystrokeEvent, NavDirection, PaneFocusedEvent,
+    EditControlEvent, EventLog, KeystrokeActivity, KeystrokeEvent, LLMBackend, NavDirection,
+    PaneFocusedEvent,
 };
 use event_log_io::EventLogIO;
 use keystroke::{classify, key_to_bytes};
+use llm_io::{LLMRequestor, LLMResult};
 use root_discovery::{to_wasi_host_path, RootDiscovery};
 use summary_io::SummaryIO;
 
@@ -34,6 +40,10 @@ struct State {
     live_cursor: usize,
     last_activity_time: Option<SystemTime>,
     last_summary_time: Option<SystemTime>,
+    config_io: ConfigIO,
+    onboarding_active: bool,
+    onboarding_selection: usize,
+    llm_requestor: LLMRequestor,
     #[cfg(feature = "pane-content-tracking")]
     pane_registry: pane_content::PaneRegistry,
 }
@@ -178,6 +188,13 @@ impl State {
                 );
                 info!(path = ?wasi_summaries, "Summary IO initialized");
                 self.summary_io.set_summaries_dir(wasi_summaries);
+
+                let wasi_config_dir = to_wasi_host_path(
+                    &self.discovery.initial_cwd,
+                    &project_dir.join(crumbeez_lib::CRUMBEEZ_DIR_NAME),
+                );
+                self.config_io.set_config_dir(wasi_config_dir);
+                self.config_io.request_load();
             }
 
             self.reset_inactivity_timer();
@@ -281,19 +298,101 @@ impl State {
                 count = unconsumed,
                 "Pane switch trigger, summarizing events"
             );
-            if let Some(summary) = event_log_io::generate_summary(&mut self.event_log) {
+
+            if matches!(self.llm_requestor.backend(), LLMBackend::Ollama { .. })
+                && !self.llm_requestor.is_pending()
+            {
+                if let Some((events, event_count)) =
+                    event_log_io::extract_events_for_llm(&mut self.event_log)
+                {
+                    info!(event_count, "Requesting LLM summary");
+                    self.llm_requestor.request_leaf_summary(events, event_count);
+                }
+            } else if let Some(summary) = event_log_io::generate_summary(&mut self.event_log) {
                 self.pending_summaries.push(summary.clone());
                 if self.pending_summaries.len() > 10 {
                     self.pending_summaries.remove(0);
                 }
                 self.summary_io.save_summary_text(summary);
             }
+
             if let Ok(data) = self.event_log.serialize() {
                 self.event_log_io.save(data);
             } else {
                 error!("Failed to serialize event log");
             }
         }
+    }
+
+    fn handle_onboarding_key(&mut self, key: &KeyWithModifier) -> bool {
+        match key.bare_key {
+            BareKey::Up | BareKey::Char('k') => {
+                if self.onboarding_selection > 0 {
+                    self.onboarding_selection -= 1;
+                }
+                true
+            }
+            BareKey::Down | BareKey::Char('j') => {
+                if self.onboarding_selection < 3 {
+                    self.onboarding_selection += 1;
+                }
+                true
+            }
+            BareKey::Enter => {
+                let backend = match self.onboarding_selection {
+                    0 => LLMBackend::NoLLM,
+                    1 => LLMBackend::default_ollama(),
+                    2 => LLMBackend::default_openai(),
+                    3 => LLMBackend::default_anthropic(),
+                    _ => LLMBackend::NoLLM,
+                };
+                self.config_io.config_mut().llm.backend = Some(backend.clone());
+                self.llm_requestor.set_backend(backend);
+                self.config_io.request_save();
+                self.onboarding_active = false;
+                info!(backend = ?self.config_io.config().llm.backend, "Onboarding complete");
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn render_onboarding(&self, _rows: usize, cols: usize) {
+        println!("╔══════════════════════════════════════════════════════╗");
+        println!("║       crumbeez — Choose Your LLM Backend              ║");
+        println!("╠══════════════════════════════════════════════════════╣");
+        println!("║                                                      ║");
+        println!("║  Select how you want crumbeez to generate summaries: ║");
+        println!("║                                                      ║");
+        println!("╟──────────────────────────────────────────────────────╢");
+
+        let options = [
+            ("No LLM", "Record events only, no summaries"),
+            ("Ollama (Local)", "Run LLM locally via Ollama"),
+            ("OpenAI", "Cloud API (requires API key)"),
+            ("Anthropic", "Cloud API (requires API key)"),
+        ];
+
+        for (i, (name, desc)) in options.iter().enumerate() {
+            let marker = if i == self.onboarding_selection {
+                "►"
+            } else {
+                " "
+            };
+            let line = format!("║  {} {} - {}", marker, name, desc);
+            let padded = if cols > 4 && line.chars().count() > cols - 1 {
+                let mut s: String = line.chars().take(cols - 2).collect();
+                s.push_str("║");
+                s
+            } else {
+                format!("{:width$}║", line, width = cols.saturating_sub(1))
+            };
+            println!("{}", padded);
+        }
+
+        println!("║                                                      ║");
+        println!("║  ↑/↓ or j/k to select, Enter to confirm              ║");
+        println!("╚══════════════════════════════════════════════════════╝");
     }
 }
 
@@ -313,6 +412,7 @@ impl ZellijPlugin for State {
             PermissionType::WriteToStdin,
             PermissionType::ReadPaneContents,
             PermissionType::ReadSessionEnvironmentVariables,
+            PermissionType::WebAccess,
         ];
         #[cfg(not(feature = "pane-content-tracking"))]
         let permissions = vec![
@@ -322,6 +422,7 @@ impl ZellijPlugin for State {
             PermissionType::FullHdAccess,
             PermissionType::WriteToStdin,
             PermissionType::ReadSessionEnvironmentVariables,
+            PermissionType::WebAccess,
         ];
         request_permission(&permissions);
 
@@ -336,6 +437,7 @@ impl ZellijPlugin for State {
             EventType::RunCommandResult,
             EventType::PermissionRequestResult,
             EventType::PaneRenderReport,
+            EventType::WebRequestResult,
         ];
         #[cfg(not(feature = "pane-content-tracking"))]
         let event_types = vec![
@@ -347,6 +449,7 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::RunCommandResult,
             EventType::PermissionRequestResult,
+            EventType::WebRequestResult,
         ];
         subscribe(&event_types);
     }
@@ -372,15 +475,28 @@ impl ZellijPlugin for State {
                     self.discovery.phase,
                     crumbeez_lib::DiscoveryPhase::Ready { .. }
                 );
+
                 let handled = self
                     .discovery
-                    .handle_command_result(exit_code, &stdout, &stderr, &context);
+                    .handle_command_result(exit_code, &stdout, &stderr, &context)
+                    || self
+                        .config_io
+                        .handle_command_result(exit_code, &stdout, &context);
+
                 let is_ready_now = matches!(
                     self.discovery.phase,
                     crumbeez_lib::DiscoveryPhase::Ready { .. }
                 );
+
                 if !was_ready_before && is_ready_now {
                     self.handle_discovery_ready();
+                    if let Some(ref backend) = self.config_io.config().llm.backend {
+                        self.llm_requestor.set_backend(backend.clone());
+                        info!(backend = %backend.display_name(), "LLM backend loaded from config");
+                    }
+                    if self.config_io.needs_onboarding() {
+                        self.onboarding_active = true;
+                    }
                 }
                 handled
             }
@@ -393,10 +509,14 @@ impl ZellijPlugin for State {
                 true
             }
             Event::Key(key) => {
-                let event = classify(&key);
-                debug!(%event, "key event (plugin focused)");
-                self.log_event(event);
-                true
+                if self.onboarding_active {
+                    self.handle_onboarding_key(&key)
+                } else {
+                    let event = classify(&key);
+                    debug!(%event, "key event (plugin focused)");
+                    self.log_event(event);
+                    true
+                }
             }
             Event::TabUpdate(tabs) => {
                 self.tab_names = tabs
@@ -442,7 +562,18 @@ impl ZellijPlugin for State {
                     self.seal_pending_text();
                     let unconsumed = self.event_log.unconsumed_count();
                     if unconsumed > 0 {
-                        if let Some(summary) = event_log_io::generate_summary(&mut self.event_log) {
+                        if matches!(self.llm_requestor.backend(), LLMBackend::Ollama { .. })
+                            && !self.llm_requestor.is_pending()
+                        {
+                            if let Some((events, event_count)) =
+                                event_log_io::extract_events_for_llm(&mut self.event_log)
+                            {
+                                info!(event_count, "Requesting LLM summary on inactivity");
+                                self.llm_requestor.request_leaf_summary(events, event_count);
+                            }
+                        } else if let Some(summary) =
+                            event_log_io::generate_summary(&mut self.event_log)
+                        {
                             self.pending_summaries.push(summary.clone());
                             if self.pending_summaries.len() > 10 {
                                 self.pending_summaries.remove(0);
@@ -463,6 +594,34 @@ impl ZellijPlugin for State {
                 true
             }
             Event::FileSystemUpdate(_) => true,
+            Event::WebRequestResult(status, headers, body, context) => {
+                if let Some(result) = self
+                    .llm_requestor
+                    .handle_web_request_result(status, &headers, &body, &context)
+                {
+                    match result {
+                        LLMResult::Summary(response) => {
+                            if !response.digest.is_empty() {
+                                let summary_text = if response.body.is_empty() {
+                                    response.digest.clone()
+                                } else {
+                                    format!("{}\n\n{}", response.digest, response.body)
+                                };
+                                self.pending_summaries.push(summary_text.clone());
+                                if self.pending_summaries.len() > 10 {
+                                    self.pending_summaries.remove(0);
+                                }
+                                self.summary_io.save_summary_text(summary_text);
+                                info!(digest = %response.digest, "LLM summary received");
+                            }
+                        }
+                        LLMResult::Error(e) => {
+                            error!(error = %e, "LLM request failed");
+                        }
+                    }
+                }
+                true
+            }
             _ => false,
         };
 
@@ -470,6 +629,11 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        if self.onboarding_active {
+            self.render_onboarding(rows, cols);
+            return;
+        }
+
         println!("crumbeez — breadcrumb logger");
         println!();
         println!("Root discovery: {}", self.discovery.phase);
