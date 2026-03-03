@@ -4,12 +4,14 @@ use tracing::{debug, error, info};
 use zellij_tile::prelude::{web_request, HttpVerb};
 
 const CTX_ACTION: &str = "crumbeez_llm_action";
+const CTX_LIST_MODELS: &str = "crumbeez_list_models";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum LLMRequestAction {
     LeafSummary { event_count: u32 },
     SectionSummary,
     Grouping,
+    ListModels,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -46,6 +48,10 @@ impl LLMRequestor {
 
     pub fn set_backend(&mut self, backend: LLMBackend) {
         self.backend = backend;
+    }
+
+    pub fn backend_mut(&mut self) -> &mut LLMBackend {
+        &mut self.backend
     }
 
     pub fn is_pending(&self) -> bool {
@@ -262,7 +268,43 @@ impl LLMRequestor {
                 })),
                 Err(e) => Some(LLMResult::Error(e.to_string())),
             },
+            LLMRequestAction::ListModels => None,
         }
+    }
+
+    pub fn handle_list_models_result(
+        &mut self,
+        status_code: u16,
+        body: &[u8],
+        context: &BTreeMap<String, String>,
+    ) -> Option<Vec<String>> {
+        if !context.contains_key(CTX_LIST_MODELS) {
+            return None;
+        }
+
+        self.pending_request = false;
+
+        if status_code != 200 {
+            error!(status_code, "Failed to list Ollama models");
+            return None;
+        }
+
+        let body_str = String::from_utf8_lossy(body);
+        let json: serde_json::Value = match serde_json::from_str(&body_str) {
+            Ok(j) => j,
+            Err(e) => {
+                error!(error = %e, "Failed to parse Ollama models JSON");
+                return None;
+            }
+        };
+
+        let models: Vec<String> = json["models"]
+            .as_array()?
+            .iter()
+            .filter_map(|m| m["name"].as_str().map(String::from))
+            .collect();
+
+        Some(models)
     }
 }
 
