@@ -317,6 +317,7 @@ impl State {
                 self.summary_io.save_summary_text(summary);
             }
 
+            self.event_log.compact();
             if let Ok(data) = self.event_log.serialize() {
                 self.event_log_io.save(data);
             } else {
@@ -583,6 +584,7 @@ impl ZellijPlugin for State {
                             }
                             self.summary_io.save_summary_text(summary);
                         }
+                        self.event_log.compact();
                         if let Ok(data) = self.event_log.serialize() {
                             self.event_log_io.save(data);
                         } else {
