@@ -31,12 +31,12 @@ Actions:
 
 Produce:
 1. DIGEST (max 80 chars): the essence of what happened.
-2. BODY (2-5 sentences, Markdown): files touched, commands run, outcomes.
+2. BODY: a terse, timestamped log in the style of meeting minutes. Use short imperative phrases (e.g. "Opened file", "Ran cargo build"). Each entry on its own line, prefixed with the timestamp of the first relevant event. No prose, no filler sentences.
 
 Format your response as:
 DIGEST: <text>
 BODY:
-<markdown>"#,
+<log>"#,
             events
                 .iter()
                 .enumerate()
@@ -52,12 +52,14 @@ BODY:
 
 {}
 
-Produce DIGEST (max 100 chars) and BODY (3-8 sentences).
+Produce:
+1. DIGEST (max 100 chars): the essence of the work segment.
+2. BODY: a terse bullet-point log in the style of meeting minutes. Each bullet is a short imperative phrase (e.g. "Fixed auth bug", "Updated config"). No prose, no filler sentences.
 
 Format your response as:
 DIGEST: <text>
 BODY:
-<markdown>
+<log>
 
 If any digest is too vague to summarize confidently, respond with: NEED_DETAIL: <number>"#,
             child_digests

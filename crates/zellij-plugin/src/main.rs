@@ -273,7 +273,11 @@ impl State {
 
         // Notify the pane registry that focus has moved (flushes old pane).
         #[cfg(feature = "pane-content-tracking")]
-        if let Some(pane_event) = self.pane_registry.on_focus_changed(pane.id) {
+        if let Some(pane_event) = self.pane_registry.on_focus_changed(
+            pane.id,
+            Some(pane.title.clone()),
+            pane.terminal_command.clone(),
+        ) {
             self.event_log.append(
                 KeystrokeEvent::PaneOutput(pane_event),
                 Self::current_time_ms(),
@@ -308,7 +312,7 @@ impl State {
                 && !self.llm_requestor.is_pending()
             {
                 if let Some((events, event_count)) =
-                    event_log_io::extract_events_for_llm(&mut self.event_log)
+                    event_log_io::extract_events_with_context(&mut self.event_log)
                 {
                     info!(event_count, "Requesting LLM summary");
                     self.llm_requestor.request_leaf_summary(events, event_count);
@@ -531,6 +535,7 @@ impl ZellijPlugin for State {
             PermissionType::WriteToStdin,
             PermissionType::ReadPaneContents,
             PermissionType::ReadSessionEnvironmentVariables,
+            PermissionType::ReadCliPipes,
             PermissionType::WebAccess,
         ];
         #[cfg(not(feature = "pane-content-tracking"))]
@@ -541,6 +546,7 @@ impl ZellijPlugin for State {
             PermissionType::FullHdAccess,
             PermissionType::WriteToStdin,
             PermissionType::ReadSessionEnvironmentVariables,
+            PermissionType::ReadCliPipes,
             PermissionType::WebAccess,
         ];
         request_permission(&permissions);
@@ -689,7 +695,7 @@ impl ZellijPlugin for State {
                             && !self.llm_requestor.is_pending()
                         {
                             if let Some((events, event_count)) =
-                                event_log_io::extract_events_for_llm(&mut self.event_log)
+                                event_log_io::extract_events_with_context(&mut self.event_log)
                             {
                                 info!(event_count, "Requesting LLM summary on inactivity");
                                 self.llm_requestor.request_leaf_summary(events, event_count);
