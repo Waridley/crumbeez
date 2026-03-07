@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 use zellij_tile::prelude::{web_request, HttpVerb};
 
+use crate::event_log_io::LlmEventWithContext;
+
 const CTX_ACTION: &str = "crumbeez_llm_action";
 const CTX_LIST_MODELS: &str = "crumbeez_list_models";
 
@@ -62,7 +64,11 @@ impl LLMRequestor {
         &self.stats
     }
 
-    pub fn request_leaf_summary(&mut self, events: Vec<String>, event_count: u32) -> bool {
+    pub fn request_leaf_summary(
+        &mut self,
+        events: Vec<LlmEventWithContext>,
+        event_count: u32,
+    ) -> bool {
         let (endpoint, model) = match &self.backend {
             LLMBackend::Ollama { endpoint, model } => (endpoint, model),
             _ => {
@@ -314,27 +320,54 @@ pub enum LLMResult {
     Error(String),
 }
 
-fn build_leaf_prompt(events: &[String]) -> String {
+fn format_timestamp_ms(ts_ms: u64) -> String {
+    let secs = ts_ms / 1000;
+    let h = (secs / 3600) % 24;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+fn build_leaf_prompt(events: &[LlmEventWithContext]) -> String {
+    let actions: String = events
+        .iter()
+        .map(|e| {
+            let context = match (&e.pane_title, &e.command) {
+                (Some(title), Some(cmd)) => format!(" [pane: {} ({})]", title, cmd),
+                (Some(title), None) => format!(" [pane: {}]", title),
+                (None, Some(cmd)) => format!(" [command: {}]", cmd),
+                (None, None) => String::new(),
+            };
+            format!(
+                "[{}] {}{}",
+                format_timestamp_ms(e.timestamp_ms),
+                e.event_string,
+                context
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     format!(
         r#"You are summarizing a user's recent terminal activity.
+
+Context:
+- Pane titles show the running program (e.g., "vim", "bash", "cargo")
+- The command field shows what's executing in the pane
+- Events are prefixed with a [HH:MM:SS] timestamp
 
 Actions:
 {}
 
 Produce:
 1. DIGEST (max 80 chars): the essence of what happened.
-2. BODY (2-5 sentences, Markdown): files touched, commands run, outcomes.
+2. BODY: a terse, timestamped log in the style of meeting minutes. Use short imperative phrases (e.g. "Opened file", "Ran cargo build"). Each entry on its own line, prefixed with the timestamp of the first relevant event. No prose, no filler sentences.
 
 Format your response as:
 DIGEST: <text>
 BODY:
-<markdown>"#,
-        events
-            .iter()
-            .enumerate()
-            .map(|(i, e)| format!("{}. {}", i + 1, e))
-            .collect::<Vec<_>>()
-            .join("\n")
+<log>"#,
+        actions
     )
 }
 
@@ -344,12 +377,14 @@ fn build_section_prompt(child_digests: &[String]) -> String {
 
 {}
 
-Produce DIGEST (max 100 chars) and BODY (3-8 sentences).
+Produce:
+1. DIGEST (max 100 chars): the essence of the work segment.
+2. BODY: a terse bullet-point log in the style of meeting minutes. Each bullet is a short imperative phrase (e.g. "Fixed auth bug", "Updated config"). No prose, no filler sentences.
 
 Format your response as:
 DIGEST: <text>
 BODY:
-<markdown>"#,
+<log>"#,
         child_digests
             .iter()
             .enumerate()

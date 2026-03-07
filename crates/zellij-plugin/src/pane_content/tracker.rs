@@ -19,6 +19,10 @@ pub struct PaneTracker {
     processor: Processor,
     /// Hash of the last viewport we processed; used to skip unchanged frames.
     last_viewport_hash: u64,
+    /// The title of this pane (e.g. "vim", "cargo run")
+    pane_title: Option<String>,
+    /// The terminal command running in this pane
+    command: Option<String>,
 }
 
 impl PaneTracker {
@@ -27,7 +31,20 @@ impl PaneTracker {
             pane_id,
             processor: Processor::new(),
             last_viewport_hash: 0,
+            pane_title: None,
+            command: None,
         }
+    }
+
+    /// Update the pane's title and command info.
+    pub fn set_pane_info(&mut self, title: Option<String>, command: Option<String>) {
+        self.pane_title = title;
+        self.command = command;
+    }
+
+    /// Check if pane info has been set.
+    pub fn has_pane_info(&self) -> bool {
+        self.pane_title.is_some()
     }
 
     /// Feed a new viewport snapshot.  Returns a [`PaneOutputEvent`] if the
@@ -64,8 +81,8 @@ impl PaneTracker {
         let (content, raw_lines, output_type) = self.processor.flush(trigger)?;
         Some(PaneOutputEvent {
             pane_id: self.pane_id,
-            pane_title: String::new(),
-            command: None,
+            pane_title: self.pane_title.clone().unwrap_or_default(),
+            command: self.command.clone(),
             output_type,
             content,
             raw_lines,

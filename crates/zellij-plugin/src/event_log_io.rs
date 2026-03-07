@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use tracing::{debug, error, info};
 
-use crumbeez_lib::{EventLog, LogEntry, Summary};
+use crumbeez_lib::{EventLog, KeystrokeEvent, LogEntry, Summary};
 
 const WASI_EVENT_LOG_PATH: &str = "/data/events.bin";
 
@@ -89,6 +89,45 @@ pub fn extract_events_for_llm(event_log: &mut EventLog) -> Option<(Vec<String>, 
     event_log.consume(count as usize);
 
     let events: Vec<String> = unconsumed.iter().map(|e| e.event.to_string()).collect();
+
+    Some((events, count))
+}
+
+#[derive(Debug, Clone)]
+pub struct LlmEventWithContext {
+    pub event_string: String,
+    pub pane_title: Option<String>,
+    pub command: Option<String>,
+    pub timestamp_ms: u64,
+}
+
+pub fn extract_events_with_context(
+    event_log: &mut EventLog,
+) -> Option<(Vec<LlmEventWithContext>, u32)> {
+    let unconsumed: Vec<LogEntry> = event_log.unconsumed().cloned().collect();
+    if unconsumed.is_empty() {
+        return None;
+    }
+
+    let count = unconsumed.len() as u32;
+    event_log.consume(count as usize);
+
+    let events: Vec<LlmEventWithContext> = unconsumed
+        .iter()
+        .map(|e| {
+            let (pane_title, command) = match &e.event {
+                KeystrokeEvent::PaneOutput(p) => (Some(p.pane_title.clone()), p.command.clone()),
+                KeystrokeEvent::PaneFocused(p) => (Some(p.pane_title.clone()), p.command.clone()),
+                _ => (None, None),
+            };
+            LlmEventWithContext {
+                event_string: e.event.to_string(),
+                pane_title,
+                command,
+                timestamp_ms: e.timestamp_ms,
+            }
+        })
+        .collect();
 
     Some((events, count))
 }

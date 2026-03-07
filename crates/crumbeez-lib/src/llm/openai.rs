@@ -31,16 +31,16 @@ impl OpenAIBackend {
     fn build_system_prompt(request_type: &SummarizationType) -> &'static str {
         match request_type {
             SummarizationType::Leaf => {
-                "You are summarizing terminal activity. Respond with:\n\
+                "You are summarizing terminal activity. Write in the style of meeting minutes or a log: short imperative phrases, no prose, no filler. Each BODY entry on its own line, prefixed with the timestamp of the first relevant event. Respond with:\n\
                  DIGEST: <max 80 chars summary>\n\
                  BODY:\n\
-                 <2-5 sentence markdown summary>"
+                 <timestamped log>"
             }
             SummarizationType::Section { .. } | SummarizationType::Session { .. } => {
-                "You are creating higher-level summaries. Respond with:\n\
+                "You are creating higher-level summaries. Write in the style of meeting minutes: terse bullet points, short imperative phrases, no prose, no filler. Respond with:\n\
                  DIGEST: <max 100 chars summary>\n\
                  BODY:\n\
-                 <3-8 sentence markdown summary>\n\
+                 <bullet-point log>\n\
                  If a child digest is vague, respond with: NEED_DETAIL: <number>"
             }
             SummarizationType::Grouping { .. } => {

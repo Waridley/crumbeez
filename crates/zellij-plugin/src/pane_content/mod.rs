@@ -45,15 +45,32 @@ pub struct PaneRegistry {
     /// type: a viewport update for the focused pane uses `MaxAccumulated`;
     /// if the focused pane just changed we use `PaneSwitch` for the old one).
     focused_pane_id: Option<u32>,
+    /// The title of the focused pane (e.g. "vim", "cargo run", "bash")
+    focused_pane_title: Option<String>,
+    /// The terminal command running in the focused pane
+    focused_pane_command: Option<String>,
 }
 
 impl PaneRegistry {
     /// Notify the registry that focus has moved to `new_pane_id`.
     ///
-    /// Immediately flushes the previously-focused pane with a `PaneSwitch`
+    /// Immediately flushes the previously focused pane with a `PaneSwitch`
     /// trigger and returns any resulting event.
-    pub fn on_focus_changed(&mut self, new_pane_id: u32) -> Option<PaneOutputEvent> {
+    pub fn on_focus_changed(
+        &mut self,
+        new_pane_id: u32,
+        pane_title: Option<String>,
+        pane_command: Option<String>,
+    ) -> Option<PaneOutputEvent> {
         let old = self.focused_pane_id.replace(new_pane_id);
+        self.focused_pane_title = pane_title.clone();
+        self.focused_pane_command = pane_command.clone();
+
+        // Update the new tracker's pane info
+        if let Some(tracker) = self.trackers.get_mut(&new_pane_id) {
+            tracker.set_pane_info(pane_title, pane_command);
+        }
+
         if let Some(old_id) = old {
             if old_id != new_pane_id {
                 if let Some(tracker) = self.trackers.get_mut(&old_id) {
@@ -62,6 +79,14 @@ impl PaneRegistry {
             }
         }
         None
+    }
+
+    /// Returns the current pane title and command for the focused pane.
+    pub fn focused_pane_info(&self) -> (Option<&str>, Option<&str>) {
+        (
+            self.focused_pane_title.as_deref(),
+            self.focused_pane_command.as_deref(),
+        )
     }
 
     /// Process a full `PaneRenderReport` payload.
@@ -93,6 +118,14 @@ impl PaneRegistry {
                 .trackers
                 .entry(id)
                 .or_insert_with(|| PaneTracker::new(id));
+
+            // Ensure tracker has pane info if this is a newly created tracker
+            if !tracker.has_pane_info() && self.focused_pane_title.is_some() {
+                tracker.set_pane_info(
+                    self.focused_pane_title.clone(),
+                    self.focused_pane_command.clone(),
+                );
+            }
 
             if let Some(event) = tracker.ingest(&contents.viewport, OutputTrigger::MaxAccumulated) {
                 events.push(event);
