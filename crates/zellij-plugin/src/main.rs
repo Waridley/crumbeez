@@ -49,6 +49,9 @@ struct State {
     available_models: Vec<String>,
     model_selection_index: usize,
     pending_model_selection: bool,
+    // For deduplication: track last event to avoid logging duplicates
+    last_event: Option<KeystrokeEvent>,
+    last_event_count: usize,
     #[cfg(feature = "pane-content-tracking")]
     pane_registry: pane_content::PaneRegistry,
 }
@@ -64,6 +67,24 @@ const INACTIVITY_TIMER_SECS: f64 = 10.0;
 
 impl State {
     fn log_event(&mut self, event: KeystrokeEvent) {
+        // Deduplicate consecutive identical events
+        if let Some(ref last_event) = self.last_event {
+            if *last_event == event {
+                self.last_event_count += 1;
+                return; // Skip logging duplicate
+            }
+        }
+
+        // If we had a repeated event, log it with count before logging the new one
+        if self.last_event_count > 1 {
+            // We would need to modify the event log to support counted events
+            // For now, just reset the counter
+            self.last_event_count = 1;
+        }
+
+        self.last_event = Some(event.clone());
+        self.last_event_count = 1;
+
         self.keystroke_activity.push_event(event.clone());
         self.process_for_event_log(event);
         // Mark that this pane has had activity (for summary triggering on pane switch)
