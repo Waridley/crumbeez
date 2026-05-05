@@ -153,6 +153,7 @@ impl Summary {
                 KeystrokeEvent::FunctionKey(_) => "FunctionKey",
                 KeystrokeEvent::SystemKey(_) => "SystemKey",
                 KeystrokeEvent::PaneFocused(_) => "PaneFocused",
+                KeystrokeEvent::PaneOutput(_) => "PaneOutput",
             };
             *event_types.entry(type_name.to_string()).or_insert(0) += 1;
         }
