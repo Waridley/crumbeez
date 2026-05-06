@@ -164,14 +164,15 @@ impl State {
             phase = ?self.discovery.phase,
             "handle_discovery_ready called"
         );
-        if let crumbeez_lib::DiscoveryPhase::Ready { ref dirs } = self.discovery.phase {
-            if let Some(dir) = dirs.first() {
-                let log_path = crumbeez_lib::event_log_path_from_crumbeez_dir(dir);
-                debug!(path = ?log_path, "Log path");
-                self.event_log_io.set_log_path(log_path.clone());
-                self.event_log_io.load(self.discovery.initial_cwd.clone());
-                self.reset_inactivity_timer();
-            }
+        if let crumbeez_lib::DiscoveryPhase::Ready {
+            ref scratch_dir, ..
+        } = self.discovery.phase
+        {
+            let log_path = scratch_dir.join(crumbeez_lib::EVENT_LOG_FILE);
+            debug!(path = ?log_path, "Log path");
+            self.event_log_io.set_log_path(log_path);
+            self.event_log_io.load(self.discovery.initial_cwd.clone());
+            self.reset_inactivity_timer();
         }
     }
 
