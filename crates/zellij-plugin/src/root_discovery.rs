@@ -15,7 +15,6 @@ const CTX_PURPOSE: &str = "crumbeez_purpose";
 enum CommandPurpose {
     GitToplevel,
     GitSuperproject,
-    ResolveDataDir,
     MkdirCrumbeez,
 }
 
@@ -79,7 +78,6 @@ impl RootDiscovery {
             CommandPurpose::GitSuperproject => {
                 self.handle_git_superproject(exit_code, stdout, stderr)
             }
-            CommandPurpose::ResolveDataDir => self.handle_resolve_data_dir(exit_code, stdout),
             CommandPurpose::MkdirCrumbeez => self.handle_mkdir_result(exit_code, stderr),
         }
     }
@@ -149,43 +147,25 @@ impl RootDiscovery {
     }
 
     fn resolve_data_dir(&mut self, roots: Vec<PathBuf>) {
-        self.phase = DiscoveryPhase::ResolvingDataDir {
-            roots: roots.clone(),
-        };
+        let env = get_session_environment_variables();
+        let data_home = env
+            .get("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                env.get("HOME")
+                    .map(|h| PathBuf::from(h).join(".local/share"))
+                    .unwrap_or_else(|| PathBuf::from("/tmp/crumbeez"))
+            });
 
-        // Resolve XDG_DATA_HOME with fallback to $HOME/.local/share
-        run_command_with_env_variables_and_cwd(
-            &[
-                "sh",
-                "-c",
-                r#"echo "${XDG_DATA_HOME:-$HOME/.local/share}""#,
-            ],
-            BTreeMap::new(),
-            self.initial_cwd.clone(),
-            purpose_context(CommandPurpose::ResolveDataDir),
-        );
-    }
-
-    fn handle_resolve_data_dir(&mut self, exit_code: Option<i32>, stdout: &[u8]) -> bool {
-        let roots = match &self.phase {
-            DiscoveryPhase::ResolvingDataDir { roots } => roots.clone(),
-            _ => {
-                error!(phase = ?self.phase, "Unexpected phase for ResolveDataDir");
-                return true;
-            }
-        };
-
-        if exit_code != Some(0) || stdout.is_empty() {
-            self.phase =
-                DiscoveryPhase::Failed("Could not resolve data home directory".to_string());
-            return true;
+        if !data_home.is_absolute() {
+            self.phase = DiscoveryPhase::Failed(
+                "Could not resolve data home directory: not an absolute path".to_string(),
+            );
+            return;
         }
 
-        let data_home = PathBuf::from(String::from_utf8_lossy(stdout).trim());
         info!(data_home = ?data_home, "Resolved data home");
-
         self.create_dirs(roots, data_home);
-        true
     }
 
     fn handle_mkdir_result(&mut self, exit_code: Option<i32>, stderr: &[u8]) -> bool {
