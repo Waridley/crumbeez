@@ -5,4 +5,5 @@ target = "wasm32-wasip1"
 build-native = "build --target x86_64-unknown-linux-gnu"
 check-native = "check --target x86_64-unknown-linux-gnu"
 test-native = "test --target x86_64-unknown-linux-gnu"
+run-ollama-test = "run --target x86_64-unknown-linux-gnu --example test_ollama --features llm-http"
 

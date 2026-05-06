@@ -158,13 +158,10 @@ Events are serialized to a binary event log using MessagePack.
 
 ### 6.2 Summary Logs (Canonical)
 
-- Format: **human‑readable text**, typically Markdown or structured plain text, for example:
-  - Time window (e.g., `2026‑02‑10 14:00‑14:10`).
-  - High‑level description of what changed.
-  - Key files and commands involved.
-  - Optional notes about failures, TODOs, or follow‑ups.
+- Summaries are **hierarchical**: leaf summaries cover small bursts of activity, section summaries roll up several leaves, and session summaries roll up sections. Each node has a one‑line *digest* (for collapsed views and parent rollups) and a full Markdown *body*. See `SUMMARIES_DESIGN.md` for the complete data model, storage format, and rollup mechanics.
+- Format: **Markdown with YAML front matter** per entry, one file per session (`.crumbeez/summaries/YYYY-MM-DD_HHMMSS_<session>.md`). Append‑only; the tree is reconstructable from children lists without back‑patching.
 - Location: `.crumbeez/summaries/` relative to each project's git root.
-- The Zellij UI will read from these logs to display summaries, but *any* other tool can also read them.
+- The Zellij UI will read from these logs to display summaries as a collapsible tree, but *any* other tool can also read them.
 
 ### 6.3 Optional Index Store
 
@@ -191,6 +188,7 @@ Events are serialized to a binary event log using MessagePack.
   3. Fetches additional context (Augment MCP, git, etc.).
   4. Calls the configured `SummarizationBackend`.
   5. Writes the result to the summary log.
+- After producing a leaf summary, the orchestrator checks whether enough leaves have accumulated to trigger a **section rollup** (and similarly, sections into a **session rollup**). During rollup, the LLM may request **detail expansion** — the full body of a child summary — if a digest is too vague. See §7.4 and `SUMMARIES_DESIGN.md` for details.
 
 ### 7.2 Context Providers (including Augment MCP)
 
@@ -211,6 +209,15 @@ Events are serialized to a binary event log using MessagePack.
   - **LocalLLMBackend** – e.g., Ollama or another local server.
   - **CloudLLMBackend** – OpenAI, Anthropic, etc.
   - **NoOpBackend** – returns a simple, locally‑generated summary (or none) when the user chooses “no LLM.”
+
+
+### 7.4 Summary Hierarchy & Rollup
+
+Summaries form a three‑level tree (leaf → section → session). Leaf summaries are generated at existing triggers (pane switch, timer, command exit). When enough leaves accumulate (configurable count or time threshold), a **section rollup** combines their digests via the `SummarizationBackend`. At session end or day boundary, a **session rollup** combines sections.
+
+During rollup, the LLM backend may request **detail expansion**: if a child's one‑line digest is insufficient, the orchestrator provides the child's full body and re‑prompts (up to 2 rounds). The data model supports arbitrary depth (`level: u8`) but only three levels are implemented initially.
+
+The complete design — data model, storage format, LLM prompt templates, detail‑expansion protocol, and UI interaction — lives in `SUMMARIES_DESIGN.md`.
 
 
 ## 8. First‑Run Experience & Configuration
@@ -252,12 +259,13 @@ The UI’s job is to **present** information that already exists in logs or in m
 Core UI concepts:
 
 - **Summary Pane**
-  - A dedicated pane that shows the most recent summary and allows paging through previous summaries.
-  - Renders directly from the summary log format (Markdown/plain text).
+  - A dedicated pane that displays summaries as a **collapsible tree**. Users can expand a summary to see its children (more granular summaries) or collapse it to see just the one‑line digest.
+  - Navigation via `j`/`k` (up/down), `Enter`/`l` (expand), `h` (collapse). See `SUMMARIES_DESIGN.md` §6 for the full interaction model.
+  - Renders from the hierarchical summary log format.
 - **Status Indicator**
   - Optional status bar widget showing whether tracking is active, time since last summary, and basic stats.
-- **Minimal Interaction**
-  - Basic keybindings for next/previous summary, jump to “current” summary, and opening settings/onboarding again.
+- **Navigation & Interaction**
+  - Tree navigation keybindings, level‑collapse shortcuts (`1`/`2`/`3`), and opening settings/onboarding.
 
 Because the underlying format is log‑centric and human‑readable, future UIs (e.g., editor integrations or web dashboards) can reuse the same logs.
 
@@ -274,10 +282,10 @@ This roadmap is intentionally high‑level; **concrete setup and step‑by‑ste
   - Subscribe to core events and design the event model.
   - Implement append‑only event logging and, optionally, a simple index store.
 - **Phase 3 – Summaries, Logs, and Basic UI (MVP)**
-  - Add task‑driven summarization orchestration with optional time‑based safety checkpoints.
-  - Implement the `SummarizationBackend` abstraction and initial backend(s).
-  - Implement first‑run onboarding and generate human‑readable summary logs.
-  - Implement a basic summary pane UI that reads from those logs.
+  - Add task‑driven summarization orchestration with **hierarchical rollup** (leaf → section → session) and optional time‑based safety checkpoints. See `SUMMARIES_DESIGN.md`.
+  - Implement the `SummarizationBackend` abstraction and initial backend(s), including the detail‑expansion protocol for rollups.
+  - Implement first‑run onboarding and generate tree‑structured summary logs.
+  - Implement a tree‑based summary pane UI with expand/collapse navigation.
 - **Phase 4 – Context & Program‑Specific Intelligence**
   - Add program‑specific handlers for editors, tests, builds, and git.
   - Integrate Augment Code Context Engine MCP via a `ContextProvider` abstraction.
@@ -304,3 +312,5 @@ This roadmap is intentionally high‑level; **concrete setup and step‑by‑ste
 - **Implementation guide / setup**
   - `DEVELOPMENT_PLAN.md` is the single implementation guide containing concrete instructions for setting up the Rust project, building, running, and iterating on the plugin, along with a more detailed phase‑by‑phase development plan.
   - DESIGN.md remains focused on long‑term architecture, behavior, and constraints rather than step‑by‑step instructions.
+- **Hierarchical summaries**
+  - `SUMMARIES_DESIGN.md` contains the complete design for the recursive summary system: data model, storage format, rollup mechanics, LLM detail‑expansion protocol, and UI interaction model.
