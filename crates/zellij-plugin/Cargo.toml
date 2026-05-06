@@ -17,9 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-# The PaneRenderReport API (used by pane-content-tracking) was merged into
-# zellij main after the 0.43.1 release.  This branch points at the post-merge
-# main until a new release is cut, at which point we switch back to a version
-# number and fold the feature into the default build.
-zellij-tile = { git = "https://github.com/zellij-org/zellij.git", branch = "main" }
-
+chrono = "0.4"
+base64 = "0.22"
+console_error_panic_hook = "0.1"
+zellij-tile = "0.44.2"
