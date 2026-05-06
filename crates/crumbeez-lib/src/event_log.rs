@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::KeystrokeEvent;
 
 const EVENT_LOG_CAPACITY: usize = 10000;
+const MAX_SERIALIZED_SIZE: usize = 256 * 1024; // 256KB max serialized size
+const MAX_STRING_LEN: usize = 4096; // Max chars for TextTyped/PaneOutput content
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -39,6 +41,28 @@ impl EventLog {
     }
 
     pub fn append(&mut self, event: KeystrokeEvent, timestamp_ms: u64) {
+        // Truncate strings in events to prevent excessive memory usage
+        let truncated_event = match &event {
+            KeystrokeEvent::TextTyped(s) => {
+                if s.len() > MAX_STRING_LEN {
+                    KeystrokeEvent::TextTyped(s[..MAX_STRING_LEN].to_string())
+                } else {
+                    event.clone()
+                }
+            }
+            KeystrokeEvent::PaneOutput(pane_output) => {
+                if pane_output.content.len() > MAX_STRING_LEN {
+                    let mut truncated = pane_output.clone();
+                    truncated.content = pane_output.content[..MAX_STRING_LEN].to_string();
+                    KeystrokeEvent::PaneOutput(truncated)
+                } else {
+                    event.clone()
+                }
+            }
+            _ => event.clone(),
+        };
+
+        // Check if we're at capacity and need to make room
         if self.events.len() >= EVENT_LOG_CAPACITY {
             if self.consumed_count > 0 {
                 let to_remove = self.consumed_count.min(self.events.len());
@@ -50,10 +74,25 @@ impl EventLog {
                 self.events.pop_front();
             }
         }
+
+        // Check serialized size before adding - if it would exceed limit, clear consumed events first
         self.events.push_back(LogEntry {
-            event,
+            event: truncated_event,
             timestamp_ms,
         });
+
+        // If we're getting too large, consume some events to make room
+        if self.events.len() > EVENT_LOG_CAPACITY / 2 {
+            // Try to serialize and check size
+            if let Ok(serialized) = self.serialize() {
+                if serialized.len() > MAX_SERIALIZED_SIZE {
+                    // Consume half of the unconsumed events to make room
+                    let to_consume =
+                        (self.events.len().saturating_sub(self.consumed_count) / 2).max(1);
+                    self.consume(to_consume);
+                }
+            }
+        }
     }
 
     pub fn unconsumed(&self) -> impl Iterator<Item = &LogEntry> {

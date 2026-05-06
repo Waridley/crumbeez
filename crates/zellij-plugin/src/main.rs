@@ -21,7 +21,7 @@ use crumbeez_lib::{
 };
 use event_log_io::EventLogIO;
 use keystroke::{classify, key_to_bytes};
-use llm_io::{LLMRequestor, LLMResult};
+use llm_io::{LLMRequestor, LLMResult, LLMStats};
 use root_discovery::{to_wasi_host_path, RootDiscovery};
 use summary_io::SummaryIO;
 
@@ -45,6 +45,13 @@ struct State {
     onboarding_active: bool,
     onboarding_selection: usize,
     llm_requestor: LLMRequestor,
+    model_selection_active: bool,
+    available_models: Vec<String>,
+    model_selection_index: usize,
+    pending_model_selection: bool,
+    // For deduplication: track last event to avoid logging duplicates
+    last_event: Option<KeystrokeEvent>,
+    last_event_count: usize,
     #[cfg(feature = "pane-content-tracking")]
     pane_registry: pane_content::PaneRegistry,
 }
@@ -60,6 +67,24 @@ const INACTIVITY_TIMER_SECS: f64 = 10.0;
 
 impl State {
     fn log_event(&mut self, event: KeystrokeEvent) {
+        // Deduplicate consecutive identical events
+        if let Some(ref last_event) = self.last_event {
+            if *last_event == event {
+                self.last_event_count += 1;
+                return; // Skip logging duplicate
+            }
+        }
+
+        // If we had a repeated event, log it with count before logging the new one
+        if self.last_event_count > 1 {
+            // We would need to modify the event log to support counted events
+            // For now, just reset the counter
+            self.last_event_count = 1;
+        }
+
+        self.last_event = Some(event.clone());
+        self.last_event_count = 1;
+
         self.keystroke_activity.push_event(event.clone());
         self.process_for_event_log(event);
         // Mark that this pane has had activity (for summary triggering on pane switch)
@@ -269,7 +294,11 @@ impl State {
 
         // Notify the pane registry that focus has moved (flushes old pane).
         #[cfg(feature = "pane-content-tracking")]
-        if let Some(pane_event) = self.pane_registry.on_focus_changed(pane.id) {
+        if let Some(pane_event) = self.pane_registry.on_focus_changed(
+            pane.id,
+            Some(pane.title.clone()),
+            pane.terminal_command.clone(),
+        ) {
             self.event_log.append(
                 KeystrokeEvent::PaneOutput(pane_event),
                 Self::current_time_ms(),
@@ -304,7 +333,7 @@ impl State {
                 && !self.llm_requestor.is_pending()
             {
                 if let Some((events, event_count)) =
-                    event_log_io::extract_events_for_llm(&mut self.event_log)
+                    event_log_io::extract_events_with_context(&mut self.event_log)
                 {
                     info!(event_count, "Requesting LLM summary");
                     self.llm_requestor.request_leaf_summary(events, event_count);
@@ -350,9 +379,79 @@ impl State {
                 };
                 self.config_io.config_mut().llm.backend = Some(backend.clone());
                 self.llm_requestor.set_backend(backend);
-                self.config_io.request_save();
+
+                if self.onboarding_selection == 1 {
+                    self.pending_model_selection = true;
+                } else {
+                    self.config_io.request_save();
+                }
+
                 self.onboarding_active = false;
                 info!(backend = ?self.config_io.config().llm.backend, "Onboarding complete");
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn start_model_selection(&mut self) -> bool {
+        match self.llm_requestor.backend() {
+            LLMBackend::Ollama { endpoint, .. } => {
+                let url = format!("{}/api/tags", endpoint);
+                let mut headers = BTreeMap::new();
+                headers.insert("Content-Type".to_string(), "application/json".to_string());
+                let mut context: BTreeMap<String, String> = BTreeMap::new();
+                context.insert("crumbeez_list_models".to_string(), "true".to_string());
+                info!(url = %url, "Querying Ollama for available models");
+                use zellij_tile::prelude::HttpVerb;
+                web_request(url, HttpVerb::Get, headers, vec![], context);
+                self.model_selection_active = true;
+                true
+            }
+            _ => {
+                info!("Model selection only supported for Ollama currently");
+                false
+            }
+        }
+    }
+
+    fn handle_model_selection_key(&mut self, key: &KeyWithModifier) -> bool {
+        match key.bare_key {
+            BareKey::Up | BareKey::Char('k') => {
+                if self.model_selection_index > 0 {
+                    self.model_selection_index -= 1;
+                }
+                true
+            }
+            BareKey::Down | BareKey::Char('j') => {
+                if self.model_selection_index < self.available_models.len().saturating_sub(1) {
+                    self.model_selection_index += 1;
+                }
+                true
+            }
+            BareKey::Enter => {
+                if let Some(model) = self
+                    .available_models
+                    .get(self.model_selection_index)
+                    .cloned()
+                {
+                    self.llm_requestor
+                        .backend_mut()
+                        .set_ollama_model(model.clone());
+                    self.config_io.config_mut().llm.backend =
+                        Some(self.llm_requestor.backend().clone());
+                    self.config_io.request_save();
+                    info!(model = %model, "Model changed");
+                }
+                self.model_selection_active = false;
+                self.available_models.clear();
+                self.model_selection_index = 0;
+                true
+            }
+            BareKey::Esc => {
+                self.model_selection_active = false;
+                self.available_models.clear();
+                self.model_selection_index = 0;
                 true
             }
             _ => false,
@@ -396,6 +495,47 @@ impl State {
         println!("║  ↑/↓ or j/k to select, Enter to confirm              ║");
         println!("╚══════════════════════════════════════════════════════╝");
     }
+
+    fn render_model_selection(&self, _rows: usize, cols: usize) {
+        render_status_bar(
+            self.llm_requestor.backend(),
+            self.llm_requestor.stats(),
+            cols,
+            self.llm_requestor.is_pending(),
+        );
+        println!();
+        println!("╔══════════════════════════════════════════════════════╗");
+        println!("║          crumbeez — Select Model                      ║");
+        println!("╠══════════════════════════════════════════════════════╣");
+
+        if self.available_models.is_empty() {
+            let loading = "Loading models...";
+            println!("║  {}", loading);
+            println!("╚══════════════════════════════════════════════════════╝");
+            return;
+        }
+
+        for (i, model) in self.available_models.iter().enumerate() {
+            let marker = if i == self.model_selection_index {
+                "►"
+            } else {
+                " "
+            };
+            let line = format!("║  {} {}", marker, model);
+            let padded = if cols > 4 && line.chars().count() > cols - 1 {
+                let mut s: String = line.chars().take(cols - 2).collect();
+                s.push_str("║");
+                s
+            } else {
+                format!("{:width$}║", line, width = cols.saturating_sub(1))
+            };
+            println!("{}", padded);
+        }
+
+        println!("║                                                      ║");
+        println!("║  ↑/↓ or j/k to select, Enter to confirm, Esc cancel  ║");
+        println!("╚══════════════════════════════════════════════════════╝");
+    }
 }
 
 impl ZellijPlugin for State {
@@ -416,6 +556,7 @@ impl ZellijPlugin for State {
             PermissionType::WriteToStdin,
             PermissionType::ReadPaneContents,
             PermissionType::ReadSessionEnvironmentVariables,
+            PermissionType::ReadCliPipes,
             PermissionType::WebAccess,
         ];
         #[cfg(not(feature = "pane-content-tracking"))]
@@ -426,6 +567,7 @@ impl ZellijPlugin for State {
             PermissionType::FullHdAccess,
             PermissionType::WriteToStdin,
             PermissionType::ReadSessionEnvironmentVariables,
+            PermissionType::ReadCliPipes,
             PermissionType::WebAccess,
         ];
         request_permission(&permissions);
@@ -515,6 +657,10 @@ impl ZellijPlugin for State {
             Event::Key(key) => {
                 if self.onboarding_active {
                     self.handle_onboarding_key(&key)
+                } else if self.model_selection_active {
+                    self.handle_model_selection_key(&key)
+                } else if key.bare_key == BareKey::Char('c') {
+                    self.start_model_selection()
                 } else {
                     let event = classify(&key);
                     debug!(%event, "key event (plugin focused)");
@@ -570,7 +716,7 @@ impl ZellijPlugin for State {
                             && !self.llm_requestor.is_pending()
                         {
                             if let Some((events, event_count)) =
-                                event_log_io::extract_events_for_llm(&mut self.event_log)
+                                event_log_io::extract_events_with_context(&mut self.event_log)
                             {
                                 info!(event_count, "Requesting LLM summary on inactivity");
                                 self.llm_requestor.request_leaf_summary(events, event_count);
@@ -600,6 +746,21 @@ impl ZellijPlugin for State {
             }
             Event::FileSystemUpdate(_) => true,
             Event::WebRequestResult(status, headers, body, context) => {
+                if context.contains_key("crumbeez_list_models") {
+                    if let Some(models) = self
+                        .llm_requestor
+                        .handle_list_models_result(status, &body, &context)
+                    {
+                        self.available_models = models;
+                        self.model_selection_index = 0;
+                        info!(
+                            count = self.available_models.len(),
+                            "Loaded available models"
+                        );
+                    }
+                    return true;
+                }
+
                 if let Some(result) = self
                     .llm_requestor
                     .handle_web_request_result(status, &headers, &body, &context)
@@ -634,13 +795,21 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        if self.pending_model_selection {
+            self.pending_model_selection = false;
+            let _ = self.start_model_selection();
+        }
+
         if self.onboarding_active {
             self.render_onboarding(rows, cols);
             return;
         }
 
-        println!("crumbeez — breadcrumb logger");
-        println!();
+        if self.model_selection_active {
+            self.render_model_selection(rows, cols);
+            return;
+        }
+
         println!("Root discovery: {}", self.discovery.phase);
 
         if let Some(ref git_root) = self.discovery.git_root {
@@ -696,6 +865,58 @@ impl ZellijPlugin for State {
                 println!("{}", truncated);
             }
         }
+
+        if matches!(self.llm_requestor.backend(), LLMBackend::Ollama { .. }) {
+            println!();
+            println!("Press c to change model");
+        }
+
+        render_status_bar(
+            self.llm_requestor.backend(),
+            self.llm_requestor.stats(),
+            cols,
+            self.llm_requestor.is_pending(),
+        );
+    }
+}
+
+fn render_status_bar(backend: &LLMBackend, stats: &LLMStats, cols: usize, is_pending: bool) {
+    let (provider, model) = match backend {
+        LLMBackend::NoLLM => ("No LLM".to_string(), None),
+        LLMBackend::Ollama { model, .. } => ("Ollama".to_string(), Some(model.clone())),
+        LLMBackend::OpenAI { model, .. } => ("OpenAI".to_string(), Some(model.clone())),
+        LLMBackend::Anthropic { model, .. } => ("Anthropic".to_string(), Some(model.clone())),
+    };
+
+    let mut parts = vec![format!("Provider: {}", provider)];
+    if let Some(m) = model {
+        parts.push(format!("Model: {}", truncate_model_name(&m, 20)));
+    }
+    if stats.request_count > 0 {
+        parts.push(format!("Tokens: {}->{}", stats.tokens_in, stats.tokens_out));
+    }
+    if is_pending {
+        parts.push("pending...".to_string());
+    }
+
+    let status = parts.join(" | ");
+
+    let bar = if cols > 4 && status.chars().count() + 4 > cols {
+        let max_chars = cols.saturating_sub(4);
+        let truncated: String = status.chars().take(max_chars).collect();
+        format!("[{}]", truncated)
+    } else {
+        format!("[{}]", status)
+    };
+    println!("{}", bar);
+}
+
+fn truncate_model_name(name: &str, max_chars: usize) -> String {
+    if name.chars().count() <= max_chars {
+        name.to_string()
+    } else {
+        let shortened: String = name.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{}...", shortened)
     }
 }
 

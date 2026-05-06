@@ -48,6 +48,19 @@ impl LLMBackend {
             model: "claude-3-5-haiku-latest".to_string(),
         }
     }
+
+    pub fn set_ollama_model(&mut self, model: String) {
+        if let Self::Ollama { model: m, .. } = self {
+            *m = model;
+        }
+    }
+
+    pub fn ollama_endpoint(&self) -> Option<&str> {
+        match self {
+            Self::Ollama { endpoint, .. } => Some(endpoint),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
